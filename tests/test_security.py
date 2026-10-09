@@ -15,7 +15,7 @@ def make_client(tmp_path, **overrides):
     settings = dict(provider="local", data_root="tests/fixtures",
                     cache_root=str(tmp_path / "cache"), admin_token="s3cret",
                     rate_limit=10_000, rate_window=60, max_inflight=1_000,
-                    trust_proxy_hops=0)
+                    trust_proxy_hops=0, client_ip_header="")
     settings.update(overrides)
     deps.reset_for_tests(**settings)
     from api.main import app
@@ -119,18 +119,20 @@ def test_limiter_forgets_idle_clients():
 
 # ── Client identification ──────────────────────────────────────────────────
 
-def request_with(xff=None, peer="10.0.0.1"):
+def request_with(xff=None, peer="10.0.0.1", cf=None):
     headers = [(b"x-forwarded-for", xff.encode())] if xff else []
+    if cf:
+        headers.append((b"cf-connecting-ip", cf.encode()))
     return Request({"type": "http", "headers": headers, "client": (peer, 1234)})
 
 
 def test_socket_address_used_when_no_proxy_trusted(tmp_path):
-    deps.reset_for_tests(trust_proxy_hops=0, cache_root=str(tmp_path))
+    deps.reset_for_tests(trust_proxy_hops=0, client_ip_header="", cache_root=str(tmp_path))
     assert client_key(request_with("1.2.3.4")) == "10.0.0.1"
 
 
 def test_rightmost_trusted_entry_used_behind_one_proxy(tmp_path):
-    deps.reset_for_tests(trust_proxy_hops=1, cache_root=str(tmp_path))
+    deps.reset_for_tests(trust_proxy_hops=1, client_ip_header="", cache_root=str(tmp_path))
     # Client claimed 6.6.6.6; the proxy appended what it really saw.
     assert client_key(request_with("6.6.6.6, 203.0.113.9")) == "203.0.113.9"
 
@@ -138,12 +140,57 @@ def test_rightmost_trusted_entry_used_behind_one_proxy(tmp_path):
 def test_spoofed_leftmost_entry_cannot_choose_a_bucket(tmp_path):
     """Taking the left-most entry would let a client rotate fake addresses
     to dodge the limit. Only the proxy-appended entry counts."""
-    deps.reset_for_tests(trust_proxy_hops=1, cache_root=str(tmp_path))
+    deps.reset_for_tests(trust_proxy_hops=1, client_ip_header="", cache_root=str(tmp_path))
     a = client_key(request_with("1.1.1.1, 203.0.113.9"))
     b = client_key(request_with("2.2.2.2, 203.0.113.9"))
     assert a == b == "203.0.113.9"
 
 
 def test_short_chain_falls_back_to_socket(tmp_path):
-    deps.reset_for_tests(trust_proxy_hops=2, cache_root=str(tmp_path))
+    deps.reset_for_tests(trust_proxy_hops=2, client_ip_header="", cache_root=str(tmp_path))
     assert client_key(request_with("203.0.113.9")) == "10.0.0.1"
+
+
+# ── Edge-set client header (Render / Cloudflare) ───────────────────────────
+
+def test_edge_header_preferred_over_forwarded_for(tmp_path):
+    deps.reset_for_tests(client_ip_header="cf-connecting-ip",
+                         trust_proxy_hops=1, cache_root=str(tmp_path))
+    r = request_with("6.6.6.6, 198.51.100.7, 10.1.1.1", cf="203.0.113.9")
+    assert client_key(r) == "203.0.113.9"
+
+
+def test_forwarded_for_spoof_cannot_move_the_bucket_with_edge_header(tmp_path):
+    """The live failure: a fake X-Forwarded-For escaped the limit. With the
+    edge header configured, whatever the client writes there is ignored."""
+    deps.reset_for_tests(client_ip_header="cf-connecting-ip",
+                         trust_proxy_hops=0, cache_root=str(tmp_path))
+    a = client_key(request_with("9.9.9.9, edge, lb", cf="203.0.113.9"))
+    b = client_key(request_with("1.2.3.4, edge2, lb2", cf="203.0.113.9"))
+    assert a == b == "203.0.113.9"
+
+
+def test_rotating_proxy_pool_does_not_split_one_client(tmp_path):
+    """hops=1 on Render picked a rotating infrastructure address, so one
+    client got a fresh bucket per request. The edge header is stable."""
+    deps.reset_for_tests(client_ip_header="cf-connecting-ip",
+                         trust_proxy_hops=0, cache_root=str(tmp_path))
+    keys = {client_key(request_with(f"203.0.113.9, edge, lb-{i}",
+                                    cf="203.0.113.9")) for i in range(10)}
+    assert keys == {"203.0.113.9"}
+
+
+def test_missing_edge_header_falls_back_to_socket(tmp_path):
+    deps.reset_for_tests(client_ip_header="cf-connecting-ip",
+                         trust_proxy_hops=0, cache_root=str(tmp_path))
+    assert client_key(request_with("1.2.3.4")) == "10.0.0.1"
+
+
+def test_limit_holds_end_to_end_via_edge_header(tmp_path):
+    with make_client(tmp_path, rate_limit=2,
+                     client_ip_header="cf-connecting-ip") as c:
+        h = {"CF-Connecting-IP": "203.0.113.9"}
+        codes = [c.post("/backtest", json=BODY,
+                        headers=dict(h, **{"X-Forwarded-For": f"{i}.{i}.{i}.{i}"})
+                        ).status_code for i in range(1, 4)]
+        assert codes == [202, 202, 429]

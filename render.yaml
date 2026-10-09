@@ -20,11 +20,15 @@ services:
       # value; read it from the dashboard. Never commit it here.
       - key: QUANTLAB_ADMIN_TOKEN
         generateValue: true
-      # Render's load balancer appends the client address to
-      # X-Forwarded-For. If more proxies sit in front, this resolves to a
-      # proxy address shared by many clients — stricter, never looser.
+      # Requests reach the app via Cloudflare then Render's load balancer.
+      # X-Forwarded-For is unsafe in both directions here: the left end is
+      # client-written, the right end comes from rotating proxy pools. Both
+      # let a client escape the rate limit. CF-Connecting-IP is set and
+      # overwritten by Cloudflare on every request.
+      - key: QUANTLAB_CLIENT_IP_HEADER
+        value: cf-connecting-ip
       - key: QUANTLAB_TRUST_PROXY_HOPS
-        value: "1"
+        value: "0"
       - key: QUANTLAB_RATE_LIMIT
         value: "20"
       - key: QUANTLAB_RATE_WINDOW

@@ -239,9 +239,15 @@ so holding one means you submitted it or were given it.
   `Retry-After`. This is fairness, not protection: a determined client can
   rotate addresses.
 
-Behind a proxy, the client is read from `X-Forwarded-For` — from the
-**right**, `QUANTLAB_TRUST_PROXY_HOPS` entries in. The left-most entry is
-client-written, so trusting it would let anyone pick their own bucket.
+Identifying the client behind proxies is where rate limits usually fail
+open. On Render, requests pass Cloudflare and then a load balancer, so
+`X-Forwarded-For` arrives as `client, edge, lb`. The left end is
+client-written; the right end comes from rotating infrastructure pools.
+Trusting either lets a client escape the limit — both were demonstrated
+against the live deploy. The app instead reads `CF-Connecting-IP`
+(`QUANTLAB_CLIENT_IP_HEADER`), which Cloudflare overwrites on every request.
+Elsewhere, set `QUANTLAB_TRUST_PROXY_HOPS` to the exact number of appending
+proxies, or leave both unset to use the socket address.
 
 ## Configuration
 
@@ -258,7 +264,8 @@ client-written, so trusting it would let anyone pick their own bucket.
 | `QUANTLAB_RATE_LIMIT` | `20` | Submissions per client per window |
 | `QUANTLAB_RATE_WINDOW` | `60` | Window, seconds |
 | `QUANTLAB_MAX_INFLIGHT` | `8` | Queued + running jobs, all clients |
-| `QUANTLAB_TRUST_PROXY_HOPS` | `0` | Trusted proxies; 0 uses the socket address |
+| `QUANTLAB_CLIENT_IP_HEADER` | *(unset)* | Edge-set client IP header, e.g. `cf-connecting-ip` |
+| `QUANTLAB_TRUST_PROXY_HOPS` | `0` | Trusted appending proxies; 0 uses the socket address |
 
 ## Known issues
 

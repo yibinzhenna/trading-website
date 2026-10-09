@@ -50,17 +50,31 @@ def require_admin(authorization: str | None = Header(None)):
 def client_key(request: Request):
     """Best available identity for the caller, for rate limiting only.
 
-    Behind a reverse proxy every request arrives from the proxy's address, so
-    the real client sits in X-Forwarded-For. That header is client-writable:
-    each proxy *appends* the address it saw, so only entries added by proxies
-    you trust are honest. With `trust_proxy_hops = n`, the n-th entry from the
-    right is the address the outermost trusted proxy received from.
+    In order of preference:
 
-    Taking the left-most entry — the common mistake — lets anyone pick their
-    own bucket by sending a fake header. If hops is set too high the result is
-    an internal address shared by everyone, which fails strict (one shared
-    bucket), never open.
+    1. A header set by a trusted edge proxy that overwrites any client-sent
+       value (`client_ip_header`). On Render that is Cloudflare's
+       `CF-Connecting-IP`: Cloudflare replaces it on every request, so a
+       client cannot choose its own value.
+    2. X-Forwarded-For, read from the right, `trust_proxy_hops` entries in.
+       Only correct when every proxy appends exactly one entry and the hop
+       count is exact.
+    3. The socket address.
+
+    Why not X-Forwarded-For on Render: requests pass Cloudflare and then
+    Render's load balancer, so it arrives as `client, edge, lb`. The left-most
+    entry is client-written, so trusting it lets anyone pick their own bucket.
+    The right-most entries come from rotating infrastructure pools, so trusting
+    those gives every request a fresh bucket. Both fail *open* — verified
+    against the live deploy, where hops=1 let 22 consecutive requests through
+    a limit of 20.
     """
+    header = deps.settings.client_ip_header
+    if header:
+        value = request.headers.get(header, "").strip()
+        if value:
+            return value
+
     hops = deps.settings.trust_proxy_hops
     if hops > 0:
         chain = [h.strip() for h in

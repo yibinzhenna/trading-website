@@ -33,8 +33,11 @@ class Settings:
         self.rate_window = int(os.getenv("QUANTLAB_RATE_WINDOW", 60))
         # Queued + running jobs across everyone. Protects the one instance.
         self.max_inflight = int(os.getenv("QUANTLAB_MAX_INFLIGHT", 8))
-        # Reverse proxies in front of the app whose X-Forwarded-For entries
-        # can be trusted. 0 = use the socket address (local development).
+        # Header an edge proxy sets and overwrites, naming the real client.
+        # Preferred over X-Forwarded-For. On Render: cf-connecting-ip.
+        self.client_ip_header = os.getenv("QUANTLAB_CLIENT_IP_HEADER", "").lower()
+        # Reverse proxies whose X-Forwarded-For entries can be trusted.
+        # 0 = use the socket address (local development).
         self.trust_proxy_hops = int(os.getenv("QUANTLAB_TRUST_PROXY_HOPS", 0))
 
 
