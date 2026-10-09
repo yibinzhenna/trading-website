@@ -208,6 +208,26 @@ button.link {
   text-underline-offset: 2px;
 }
 
+/* ── AI research ──────────────────────────────────────────────────────── */
+
+#research .lead { margin: 0 0 0.9rem; font-size: 0.86rem;
+                  color: var(--text-secondary); max-width: 70ch; }
+#research .wide { grid-column: span 2; }
+@media (max-width: 520px) { #research .wide { grid-column: 1 / -1; } }
+#research h3 { font-size: 0.86rem; font-weight: 600; margin: 1.2rem 0 0.6rem; }
+#research h3 .muted { font-weight: 400; color: var(--text-muted); }
+#r-trials-table td { white-space: nowrap; }
+#r-trials-table td.hyp { white-space: normal; min-width: 18ch;
+                         color: var(--text-secondary); }
+#r-trials-table tr.picked td { background: var(--surface-2); }
+#r-stats { margin: 0.8rem 0; }
+.notes { margin-top: 0.9rem; padding: 0.7rem 0.85rem; border-radius: 6px;
+         border: 1px dashed var(--border-strong); }
+.notes-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
+               color: var(--text-muted); margin-bottom: 0.3rem; }
+.notes p { margin: 0; font-size: 0.88rem; color: var(--text-secondary);
+           white-space: pre-wrap; }
+
 /* ── Your runs ────────────────────────────────────────────────────────── */
 
 .scroll { overflow-x: auto; }

@@ -197,6 +197,38 @@ table. Supabase serves every `public` table over its REST API to anyone
 holding the publishable key, which ships to every browser; RLS with no
 policies closes that, while the server, as the table owner, is unaffected.
 
+### AI research
+
+Signed-in users can hand a symbol to a language model and let it search for
+a strategy. The obvious version of this — let the model try things and
+report the best — is an overfitting machine, so it is built the other way
+round (`quantlab/research.py`):
+
+- **A holdout the model never sees.** The last 30% of bars is cut off before
+  the model is involved. Every trial runs on the first 70%; the model's pick
+  is evaluated on the holdout exactly once, and that is the verdict.
+- **The engine is the only source of numbers.** The model chooses kinds and
+  parameters through a tool and gets measurements back. Its notes are shown
+  as commentary, and metric figures in them are replaced with "[see table]".
+- **Disclosure.** The result says how many trials were tried, and that the
+  best of them is flattered by the search.
+
+Costs are bounded before anything is spent: sign-in required, a per-user
+daily quota (`QUANTLAB_RESEARCH_DAILY_LIMIT`, default 3), a site-wide daily
+ceiling (`QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT`, 50), one session per user
+at a time, a short queue, a trial cap, a token budget per session, and a
+final turn that may only call `finish`. A session that fails before using
+any tokens is not charged. Sessions run on their own worker thread so they
+never starve ordinary backtests.
+
+The model's text is untrusted (it can echo a user's goal) and reaches the
+page only escaped. Nothing about the user — no email, no id — is sent to the
+model.
+
+To enable: set `ANTHROPIC_API_KEY`, with accounts enabled. Also set a monthly
+spend limit on that key in the Anthropic console: the caps above bound usage;
+the console bounds the bill.
+
 #### Setting up Supabase
 
 1. Create a project at supabase.com.
@@ -343,6 +375,14 @@ proxies, or leave both unset to use the socket address.
 | `SUPABASE_PUBLISHABLE_KEY` | *(unset)* | Browser key (`SUPABASE_ANON_KEY` also read) |
 | `SUPABASE_JWT_SECRET` | *(unset)* | Only for projects on the legacy HS256 secret |
 | `QUANTLAB_USER_RATE_LIMIT` | `60` | Submissions per signed-in user per window |
+| `ANTHROPIC_API_KEY` | *(unset)* | Enables AI research (accounts required too) |
+| `QUANTLAB_RESEARCH_MODEL` | `claude-haiku-5-5` | Model for research sessions |
+| `QUANTLAB_RESEARCH_DAILY_LIMIT` | `3` | Sessions per user per 24 hours |
+| `QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT` | `50` | Sessions per 24 hours, all users |
+| `QUANTLAB_RESEARCH_MAX_TRIALS` | `8` | Trials per session, upper bound |
+| `QUANTLAB_RESEARCH_TOKEN_BUDGET` | `60000` | Tokens per session before `finish` is forced |
+| `QUANTLAB_RESEARCH_MAX_QUEUE` | `3` | Sessions queued or running at once |
+| `QUANTLAB_CORS_ORIGINS` | *(unset)* | Extra browser origins allowed to call the API |
 
 ## Known issues
 
@@ -375,6 +415,7 @@ quantlab/
     alphavantage.py    daily bars
   cache.py             disk cache + CachedProvider wrapper
   jobs.py              background job store
+  research.py          AI research loop: holdout, budgets, scrubbing
 api/
   main.py              FastAPI routes
   schemas.py           request/response models and validation

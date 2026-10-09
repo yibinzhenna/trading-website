@@ -50,5 +50,14 @@ services:
         sync: false
       - key: QUANTLAB_USER_RATE_LIMIT
         value: "60"
+      # AI research. Unset key = feature off. Set a monthly spend limit on
+      # the key in the Anthropic console as well: these caps bound usage,
+      # the console caps the bill.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: QUANTLAB_RESEARCH_DAILY_LIMIT
+        value: "3"
+      - key: QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT
+        value: "50"
       - key: QUANTLAB_RUN_RETENTION_DAYS
         value: "30"

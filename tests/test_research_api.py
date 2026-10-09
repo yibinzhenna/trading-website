@@ -1,0 +1,189 @@
+"""
+AI research over HTTP: who may start a session, and every limit on cost.
+"""
+
+import threading
+
+import pytest
+from fastapi.testclient import TestClient
+
+from api import deps
+from api.auth import TokenVerifier
+from test_auth import URL, FakeJWKS, bearer, token
+from test_research import TREND, FakeClient, call
+
+ALICE, BOB = bearer(token("alice")), bearer(token("bob"))
+BODY = {"symbol": "DEMO-REGIME", "trials": 3}
+SCRIPT = [TREND, call("finish", pick=1, notes="Trend held; Sharpe 9.9.")]
+
+
+def make_client(tmp_path, research=True, client=None, **overrides):
+    settings = dict(provider="local", data_root="sampledata",
+                    cache_root=str(tmp_path / "cache"), admin_token="",
+                    rate_limit=10_000, user_rate_limit=10_000,
+                    max_inflight=1_000, client_ip_header="",
+                    trust_proxy_hops=0, supabase_url=URL,
+                    supabase_publishable_key="sb_publishable_test",
+                    anthropic_api_key="", research_daily_limit=3,
+                    research_global_daily_limit=50, research_max_queue=3,
+                    database_url=f"sqlite:///{(tmp_path / 'r.db').as_posix()}")
+    settings.update(overrides)
+    deps.reset_for_tests(**settings)
+    deps.verifier = TokenVerifier(URL, jwks_client=FakeJWKS())
+    if research:
+        deps.research_client = client or FakeClient(list(SCRIPT))
+    from api.main import app
+    return TestClient(app)
+
+
+def start(c, headers=ALICE, body=BODY):
+    return c.post("/research", json=body, headers=headers)
+
+
+def finish(c, headers=ALICE):
+    r = start(c, headers)
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    deps.research_jobs.wait(job_id, timeout=60)
+    return job_id
+
+
+class BlockingClient(FakeClient):
+    """Holds the session open after its first trial until released."""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.release = threading.Event()
+
+    def create(self, **kw):
+        if len(self.requests) == 1:
+            self.release.wait(10)
+        return super().create(**kw)
+
+
+# ── Access ─────────────────────────────────────────────────────────────────
+
+def test_off_without_an_api_key(tmp_path):
+    with make_client(tmp_path, research=False) as c:
+        assert c.get("/config").json()["research"] is None
+        assert start(c).status_code == 503
+
+
+def test_config_advertises_research_and_its_limits(tmp_path):
+    with make_client(tmp_path) as c:
+        assert c.get("/config").json()["research"] == {
+            "daily_limit": 3, "max_trials": 8}
+
+
+def test_anonymous_visitors_cannot_spend_tokens(tmp_path):
+    with make_client(tmp_path) as c:
+        assert c.post("/research", json=BODY).status_code == 401
+
+
+def test_unusable_symbol_is_refused_before_any_cost(tmp_path):
+    client = FakeClient(list(SCRIPT))
+    with make_client(tmp_path, client=client) as c:
+        r = start(c, body={"symbol": "NOSUCH"})
+        assert r.status_code == 422
+        assert c.get("/me", headers=ALICE).json()["research"]["used"] == 0
+    assert client.requests == []
+
+
+# ── A full session ─────────────────────────────────────────────────────────
+
+def test_session_runs_and_is_saved(tmp_path):
+    with make_client(tmp_path) as c:
+        job_id = finish(c)
+        deps.research_jobs = type(deps.research_jobs)(workers=1)  # "restart"
+        got = c.get(f"/research/{job_id}").json()
+        mine = c.get("/me/research", headers=ALICE).json()
+    st = got["state"]
+    assert got["status"] == "done" and st["final"]["trial"] == 1
+    assert st["holdout_window"][0] > st["research_window"][1]
+    assert "9.9" not in st["notes"]                 # model's number scrubbed
+    assert st["input_tokens"] > 0
+    assert "owner_id" not in got and "alice" not in str(got)
+    assert mine["sessions"][0]["job_id"] == job_id
+    assert mine["quota"] == {"used": 1, "limit": 3, "remaining": 2}
+
+
+def test_progress_is_visible_while_running(tmp_path):
+    client = BlockingClient(list(SCRIPT))
+    with make_client(tmp_path, client=client) as c:
+        job_id = start(c).json()["job_id"]
+        for _ in range(200):
+            live = c.get(f"/research/{job_id}").json()
+            if (live.get("state") or {}).get("trials"):
+                break
+            threading.Event().wait(0.02)
+        client.release.set()
+        deps.research_jobs.wait(job_id, timeout=30)
+    assert live["status"] == "running" and len(live["state"]["trials"]) == 1
+
+
+# ── Cost limits ────────────────────────────────────────────────────────────
+
+def test_daily_quota_per_user(tmp_path):
+    with make_client(tmp_path, research_daily_limit=2) as c:
+        for _ in range(2):
+            deps.research_client = FakeClient(list(SCRIPT))
+            finish(c)
+        r = start(c)
+        assert r.status_code == 429 and "Daily research limit" in r.json()["detail"]
+        deps.research_client = FakeClient(list(SCRIPT))
+        assert start(c, BOB).status_code == 202      # bob has his own
+
+
+def test_one_session_at_a_time_per_user(tmp_path):
+    client = BlockingClient(list(SCRIPT))
+    with make_client(tmp_path, client=client) as c:
+        first = start(c).json()["job_id"]
+        second = start(c)
+        client.release.set()
+        deps.research_jobs.wait(first, timeout=30)
+    assert second.status_code == 429 and "already" in second.json()["detail"]
+
+
+def test_concurrent_requests_cannot_both_slip_past_the_quota(tmp_path):
+    """Check-then-insert is locked; without it, a burst all reads used=0."""
+    client = BlockingClient(list(SCRIPT))
+    with make_client(tmp_path, client=client, research_daily_limit=1) as c:
+        codes = []
+        threads = [threading.Thread(target=lambda: codes.append(
+            start(c).status_code)) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        client.release.set()
+    assert sorted(codes) == [202] + [429] * 5
+
+
+def test_site_wide_daily_ceiling(tmp_path):
+    with make_client(tmp_path, research_global_daily_limit=1) as c:
+        finish(c, ALICE)
+        r = start(c, BOB)
+    assert r.status_code == 429 and "capacity" in r.json()["detail"]
+
+
+def test_model_outage_fails_cleanly_and_is_not_charged(tmp_path):
+    class Down(FakeClient):
+        def create(self, **kw):
+            raise ConnectionError("api.anthropic.com unreachable, key=sk-ant-x")
+
+    with make_client(tmp_path, client=Down([])) as c:
+        job_id = finish(c)
+        got = c.get(f"/research/{job_id}").json()
+        quota = c.get("/me", headers=ALICE).json()["research"]
+    assert got["status"] == "failed"
+    assert "could not be reached" in got["error"] and "sk-ant" not in got["error"]
+    assert quota["used"] == 0
+
+
+def test_restart_releases_a_stuck_session(tmp_path):
+    with make_client(tmp_path) as c:
+        deps.runs.research_create("feedfacefeedface", "alice", "X", "", "m")
+        assert deps.runs.research_in_flight("alice") == 1
+        deps.runs = deps._make_runs()                # process restart
+        assert deps.runs.research_in_flight("alice") == 0
+        assert c.get("/research/feedfacefeedface").json()["status"] == "failed"

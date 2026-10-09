@@ -133,8 +133,9 @@ function fillForm(req) {
 }
 
 async function openSharedRun() {
-  const id = new URLSearchParams(location.search).get("run");
-  if (id) await openRun(id);
+  const q = new URLSearchParams(location.search);
+  if (q.get("run")) await openRun(q.get("run"));
+  else if (q.get("research")) await watchResearch(q.get("research"));
 }
 
 async function openRun(id) {
@@ -223,7 +224,144 @@ $("runs-table").addEventListener("click", async (event) => {
 Account.onChange((user) => {
   $("my-runs").hidden = !user;
   if (user) loadMyRuns();
+  // Anyone with a research link can view it; only signed-in users with
+  // research enabled get the form.
+  const canRun = !!(user && Account.config().research);
+  const viewing = new URLSearchParams(location.search).has("research");
+  $("research-form").hidden = !canRun;
+  $("r-quota").hidden = !canRun;
+  $("research").hidden = !(canRun || viewing);
+  if (canRun) loadResearchQuota();
 });
+
+/* ── AI research ───────────────────────────────────────────────────────────
+   Everything the model wrote (hypotheses, notes) is untrusted text: it can
+   echo whatever a user typed as a goal. It only ever reaches the page
+   escaped or through textContent. Numbers come from the engine. */
+
+const fmt = (v, d = 2) => (typeof v === "number" ? v.toFixed(d) : "—");
+const params = (p) => Object.entries(p || {})
+  .map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ");
+
+async function loadResearchQuota() {
+  try {
+    const me = await api("/me", { headers: await Account.headers() });
+    showQuota(me.research);
+  } catch { /* the card still works; the server enforces the limit */ }
+}
+
+function showQuota(q) {
+  if (!q) return;
+  $("r-quota").textContent =
+    `${q.remaining} of ${q.limit} research sessions left in the last 24 hours.`;
+  $("r-run").disabled = q.remaining <= 0;
+}
+
+async function startResearch(event) {
+  event.preventDefault();
+  $("r-run").disabled = true;
+  $("r-status").className = "status";
+  $("r-status").textContent = "Starting…";
+  try {
+    const job = await api("/research", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(await Account.headers()) },
+      body: JSON.stringify({
+        symbol: $("r-symbol").value.trim(),
+        goal: $("r-goal").value.trim(),
+        trials: parseInt($("r-trials").value, 10) || 6,
+      }),
+    });
+    showQuota(job.quota);
+    await watchResearch(job.job_id);
+  } catch (err) {
+    $("r-status").className = "status err";
+    $("r-status").textContent = err.message;
+  } finally {
+    loadResearchQuota();
+  }
+}
+
+async function watchResearch(id, timeoutMs = 600000) {
+  $("research").hidden = false;
+  if (!Account.user()) { $("research-form").hidden = true; $("r-quota").hidden = true; }
+  history.replaceState(null, "", `?research=${encodeURIComponent(id)}`);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const s = await api(`/research/${encodeURIComponent(id)}`);
+    renderResearch(s);
+    if (s.status === "done" || s.status === "failed") return s;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  throw new Error("Stopped waiting; reload the page to check again.");
+}
+
+function renderResearch(s) {
+  const st = s.state || {};
+  const trials = st.trials || [];
+  const status = $("r-status");
+  status.className = s.status === "failed" ? "status err" : "status";
+  status.textContent = {
+    queued: "Queued…",
+    running: `Running — ${trials.length} trial${trials.length === 1 ? "" : "s"} so far…`,
+    done: `Finished: ${trials.length} trials on ${s.symbol}.`,
+    failed: s.error || "The session failed.",
+  }[s.status] || s.status;
+  if (s.symbol && !$("r-symbol").value) $("r-symbol").value = s.symbol;
+
+  $("r-output").hidden = trials.length === 0;
+  const picked = st.final && st.final.trial;
+  $("r-trials-table").querySelector("tbody").innerHTML = trials.map((t) => {
+    const m = t.summary;
+    const gate = !m ? `<span class="no" title="${esc(t.error)}">ERROR</span>`
+      : `<span class="${m.passed ? "ok" : "no"}">${m.passed ? "PASS" : "FAIL"}</span>`;
+    return `<tr class="${t.n === picked ? "picked" : ""}">
+      <td>${t.n}${t.n === picked ? " ★" : ""}</td>
+      <td>${esc(String(t.kind || "").replace(/_/g, " "))}</td>
+      <td>${esc(params(t.params))}</td>
+      <td class="hyp">${esc(t.hypothesis)}</td>
+      <td class="num">${m ? fmt(m.sharpe) : "—"}</td>
+      <td class="num">${m ? fmt(m.oos_sharpe) : "—"}</td>
+      <td class="num">${m && typeof m.excess_return_pct === "number" ? pct(m.excess_return_pct) : "—"}</td>
+      <td>${gate}</td></tr>`;
+  }).join("");
+
+  const f = st.final;
+  $("r-final").hidden = !(s.status === "done" && f);
+  if (s.status === "done" && !f) {
+    status.textContent = "Finished, but no trial was valid, so nothing was tested on the holdout.";
+  }
+  if (!f || s.status !== "done") return;
+
+  const [from, to] = st.holdout_window || [];
+  $("r-window").textContent = from ? `— ${from} to ${to}, never seen by the model` : "";
+  $("r-badge").textContent = f.passed ? "PASS" : "FAIL";
+  $("r-badge").className = `badge ${f.passed ? "pass" : "fail"}`;
+  $("r-final-sub").textContent =
+    `Trial ${f.trial}, ${f.kind.replace(/_/g, " ")} (${params(f.params)}), on unseen data.`;
+  $("r-stats").innerHTML = [
+    ["Return", pct(f.total_return_pct)], ["Buy & hold", pct(f.benchmark_return_pct)],
+    ["Excess", pct(f.excess_return_pct)], ["Sharpe", fmt(f.sharpe)],
+    ["Max drawdown", `${fmt(f.max_drawdown_pct, 1)}%`], ["Trades", String(f.trades)],
+  ].map(([k, v]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  $("r-gates").querySelector("tbody").innerHTML = f.checks.map((c) => `
+    <tr><td class="${c.passed ? "ok" : "no"}">${c.passed ? "PASS" : "FAIL"}</td>
+        <td>${esc(c.name)}</td><td class="num">${esc(c.detail)}</td></tr>`).join("");
+  $("r-notes").textContent = st.notes || "The model left no notes.";
+  const who = st.picked_by === "model" ? "the model"
+    : "the engine (the model did not nominate a valid trial)";
+  $("r-disclosure").textContent =
+    `Picked by ${who} from ${f.trials_tried} trials. Every trial searched the ` +
+    `same research window, so the best of them is flattered by the search; ` +
+    `the holdout result above is the one that counts. ` +
+    `${st.input_tokens + st.output_tokens} tokens used.`;
+  $("r-load").onclick = () => {
+    fillForm({ symbol: s.symbol, kind: f.kind, params: f.params });
+    $("form").scrollIntoView({ behavior: "smooth" });
+  };
+}
+
+$("research-form").addEventListener("submit", startResearch);
 
 /* ── Render ────────────────────────────────────────────────────────────── */
 

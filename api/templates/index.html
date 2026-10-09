@@ -64,6 +64,59 @@
     <p class="hint" id="runs-empty">Backtests you run while signed in are saved here.</p>
   </div>
 
+  <div class="card" id="research" hidden>
+    <h2>AI research</h2>
+    <p class="lead">A model proposes strategies and the engine measures each one on
+       the first 70% of the data. Its pick is then tested once on the last 30%,
+       which it never saw. That one test is the verdict.</p>
+    <form class="controls" id="research-form">
+      <div>
+        <label for="r-symbol">Symbol</label>
+        <input id="r-symbol" list="symbol-list" autocomplete="off" required>
+      </div>
+      <div>
+        <label for="r-trials">Trials</label>
+        <input id="r-trials" type="number" min="2" max="8" value="6" step="1">
+      </div>
+      <div class="wide">
+        <label for="r-goal">Goal (optional)</label>
+        <input id="r-goal" maxlength="300"
+               placeholder="e.g. something that survives choppy markets">
+      </div>
+      <div><button id="r-run" type="submit">Start research</button></div>
+    </form>
+    <p class="status" id="r-status" role="status"></p>
+    <p class="hint" id="r-quota"></p>
+
+    <div id="r-output" hidden>
+      <h3>Trials <span class="muted">— research window only</span></h3>
+      <div class="scroll">
+        <table id="r-trials-table">
+          <thead><tr><th>#</th><th>Strategy</th><th>Parameters</th>
+            <th>Model's hypothesis</th><th class="num">Sharpe</th>
+            <th class="num">OOS Sharpe</th><th class="num">Excess</th><th>Gates</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="r-final" hidden>
+        <h3>Holdout test <span class="muted" id="r-window"></span></h3>
+        <div class="verdict">
+          <span class="badge" id="r-badge"></span>
+          <span class="sub" id="r-final-sub"></span>
+          <button class="ghost share" id="r-load" type="button">Load into backtester</button>
+        </div>
+        <div class="stats" id="r-stats"></div>
+        <table id="r-gates"><tbody></tbody></table>
+        <div class="notes">
+          <div class="notes-label">Model's notes — commentary, not measurements</div>
+          <p id="r-notes"></p>
+        </div>
+        <p class="hint" id="r-disclosure"></p>
+      </div>
+    </div>
+  </div>
+
   <div id="results" hidden>
 
     <div class="card">

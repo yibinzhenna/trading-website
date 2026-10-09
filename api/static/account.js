@@ -17,6 +17,7 @@ const Account = (() => {
   let sb = null;
   let session = null;
   let mode = "sign-in";
+  let config = {};
 
   const MODES = {
     "sign-in": { title: "Sign in", submit: "Sign in", email: true, password: true,
@@ -42,7 +43,8 @@ const Account = (() => {
   }
 
   async function init() {
-    const { auth } = await fetch("/config").then((r) => r.json());
+    config = await fetch("/config").then((r) => r.json());
+    const { auth } = config;
     if (!auth) return;
     await loadScript(SDK);
     sb = window.supabase.createClient(auth.url, auth.publishable_key);
@@ -161,5 +163,6 @@ const Account = (() => {
       open(mode === "sign-in" ? "sign-up" : "sign-in"));
   }
 
-  return { init, headers, onChange, user, enabled };
+  return { init, headers, onChange, user, enabled,
+           config: () => config };
 })();

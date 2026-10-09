@@ -73,6 +73,16 @@ class BacktestRequest(BaseModel):
         return v
 
 
+class ResearchRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=12)
+    goal: str = Field("", max_length=300,
+                      description="Optional steer for the model, in words")
+    trials: int = Field(6, ge=2, le=20)
+
+    _clean_symbol = field_validator("symbol")(
+        BacktestRequest._clean_symbol.__func__)
+
+
 class JobRef(BaseModel):
     job_id: str
     status: str

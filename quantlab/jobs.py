@@ -41,10 +41,10 @@ class Job:
     __slots__ = ("id", "kind", "status", "result", "error", "submitted_at",
                  "started_at", "finished_at", "meta")
 
-    def __init__(self, kind, meta=None):
+    def __init__(self, kind, meta=None, job_id=None):
         # 64 random bits. The id is the only key to a result, so it must be
         # unguessable; a truncated uuid4 spends 4 of these on its version.
-        self.id = secrets.token_hex(8)
+        self.id = job_id or secrets.token_hex(8)
         self.kind = kind
         self.status = QUEUED
         self.result = None
@@ -96,8 +96,10 @@ class JobStore:
         # because a result that could not be saved is still a result.
         self.on_finish = on_finish
 
-    def submit(self, kind, fn, *args, meta=None, **kwargs):
-        job = Job(kind, meta)
+    def submit(self, kind, fn, *args, meta=None, job_id=None, **kwargs):
+        """Queue `fn(*args, **kwargs)`. `job_id` lets a caller record the
+        job elsewhere (a database row, say) before it can possibly finish."""
+        job = Job(kind, meta, job_id)
         with self._lock:
             self._jobs[job.id] = job
             while len(self._jobs) > self.max_jobs:

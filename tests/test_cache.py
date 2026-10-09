@@ -116,3 +116,29 @@ def test_empty_upstream_is_not_cached(tmp_path):
     p.bars("SPY")
     p.bars("SPY")
     assert up.calls == 2, "an empty result must not be cached as an answer"
+
+
+def test_concurrent_writes_to_one_entry_do_not_collide(tmp_path):
+    """Two requests filling the same entry used to share a temp file."""
+    import threading
+    from datetime import datetime, timedelta
+    cache = BarCache(str(tmp_path), ttl=3600)
+    t0 = datetime(2025, 1, 1)
+    bars = [{"t": t0 + timedelta(days=i), "o": 1.0, "h": 1.0, "l": 1.0,
+             "c": 1.0, "v": 0} for i in range(500)]
+    errors = []
+
+    def write():
+        try:
+            cache.write("local", "SPY", "day", bars)
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=write) for _ in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert len(cache.read("local", "SPY", "day")) == 500
+    assert not list(tmp_path.rglob("*.tmp"))

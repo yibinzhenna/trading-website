@@ -10,6 +10,7 @@ import os
 
 from api.store import RunStore
 from quantlab.cache import BarCache, CachedProvider
+from quantlab.research import DEFAULT_MODEL
 from quantlab.jobs import JobStore
 from quantlab.providers import ProviderError, get_provider
 
@@ -60,6 +61,19 @@ class Settings:
         # separated. Empty (default): none. The UI is same-origin and needs
         # no CORS; opening it up lets any page run backtests from its
         # visitors' browsers, spreading load across their IP limits.
+        # AI research. Needs an Anthropic key *and* accounts: sessions cost
+        # money, so they are tied to a signed-in user with a daily quota.
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        self.research_model = os.getenv("QUANTLAB_RESEARCH_MODEL", DEFAULT_MODEL)
+        self.research_daily_limit = int(
+            os.getenv("QUANTLAB_RESEARCH_DAILY_LIMIT", 3))
+        # Across all users: the ceiling on what one day can cost.
+        self.research_global_daily_limit = int(
+            os.getenv("QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT", 50))
+        self.research_max_trials = int(os.getenv("QUANTLAB_RESEARCH_MAX_TRIALS", 8))
+        self.research_token_budget = int(
+            os.getenv("QUANTLAB_RESEARCH_TOKEN_BUDGET", 60_000))
+        self.research_max_queue = int(os.getenv("QUANTLAB_RESEARCH_MAX_QUEUE", 3))
         self.cors_origins = [o.strip() for o in
                              os.getenv("QUANTLAB_CORS_ORIGINS", "").split(",")
                              if o.strip()]
@@ -78,8 +92,33 @@ def _make_runs():
     return RunStore(settings.database_url, settings.run_retention_days)
 
 
+def _persist_research(job):
+    state = job.meta.get("state")
+    if job.status == "done":
+        runs.research_finish(job.id, "done", job.result)
+    else:
+        runs.research_finish(job.id, "failed", state, job.error)
+
+
+def _make_research_client():
+    """An Anthropic client, or None when research is not configured."""
+    if not settings.anthropic_api_key:
+        return None
+    import anthropic
+    return anthropic.Anthropic(api_key=settings.anthropic_api_key,
+                               max_retries=2, timeout=60.0)
+
+
+def research_enabled():
+    return research_client is not None and verifier is not None
+
+
 runs = _make_runs()
 jobs = JobStore(workers=settings.workers, on_finish=_persist)
+# Its own single worker: a research session holds a thread for a minute or
+# more, and must never starve ordinary backtests of theirs.
+research_jobs = JobStore(workers=1, on_finish=_persist_research)
+research_client = _make_research_client()
 
 
 def _make_limiter(limit=None):
@@ -134,13 +173,16 @@ def reset_for_tests(**overrides):
     so a second test module sharing the singleton would hit "cannot schedule
     new futures after shutdown" the moment it submitted anything.
     """
-    global cache, jobs, limiter, runs, user_limiter, verifier
+    global cache, jobs, limiter, runs, user_limiter, verifier, \
+        research_jobs, research_client
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
     runs.close()
     runs = _make_runs()
     jobs = JobStore(workers=settings.workers, on_finish=_persist)
+    research_jobs = JobStore(workers=1, on_finish=_persist_research)
+    research_client = _make_research_client()
     limiter = _make_limiter()
     user_limiter = _make_limiter(settings.user_rate_limit)
     verifier = _make_verifier()

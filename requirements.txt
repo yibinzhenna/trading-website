@@ -6,3 +6,5 @@ pydantic>=2.7
 sqlalchemy>=2.0
 psycopg[binary]>=3.1
 pyjwt[crypto]>=2.8
+# Exact: the SDK moves fast, and this is the version the tests ran against.
+anthropic==1.8.0

@@ -12,6 +12,7 @@ when the provider fails: yesterday's bars beat an error page.
 
 import json
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -70,18 +71,39 @@ class BarCache:
         data_path, meta_path = self._paths(provider, symbol, interval)
         os.makedirs(os.path.dirname(data_path), exist_ok=True)
         # Write to a temp file then replace, so a crash mid-write cannot
-        # leave a half-file that later reads as a cache hit.
-        tmp = data_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            for b in bars:
-                row = dict(b)
-                row["t"] = b["t"].isoformat()
-                fh.write(json.dumps(row, separators=(",", ":")) + "\n")
-        os.replace(tmp, data_path)
-        with open(meta_path, "w", encoding="utf-8") as fh:
-            json.dump({"fetched_at": time.time(), "rows": len(bars),
-                       "written": datetime.now(timezone.utc).isoformat()}, fh)
+        # leave a half-file that later reads as a cache hit. The temp name is
+        # unique per write: two requests filling the same entry at once used
+        # to share one, and interleaved their bytes.
+        lines = []
+        for b in bars:
+            row = dict(b)
+            row["t"] = b["t"].isoformat()
+            lines.append(json.dumps(row, separators=(",", ":")) + "\n")
+        meta = json.dumps({"fetched_at": time.time(), "rows": len(bars),
+                           "written": datetime.now(timezone.utc).isoformat()})
+        if not (self._atomic_write(data_path, "".join(lines))
+                and self._atomic_write(meta_path, meta)):
+            return 0
         return len(bars)
+
+    @staticmethod
+    def _atomic_write(path, text):
+        """Write-then-rename. Returns False if a concurrent writer won the
+        rename; it was storing the same bars, so losing costs nothing."""
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
+                                   prefix=os.path.basename(path) + ".",
+                                   suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp, path)
+            return True
+        except PermissionError:
+            # Windows refuses to replace a file another thread holds open.
+            return False
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
     def clear(self, provider=None):
         """Drop cached entries. Returns how many files were removed."""

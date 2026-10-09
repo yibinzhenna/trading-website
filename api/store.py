@@ -21,9 +21,9 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, MetaData,
-                        String, Table, Text, create_engine, delete, func,
-                        insert, select)
+from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, Integer,
+                        MetaData, String, Table, Text, create_engine, delete,
+                        func, insert, or_, select, update)
 
 log = logging.getLogger("quantlab.store")
 
@@ -49,6 +49,27 @@ runs = Table(
     # a migration on a table already holding data.
     Column("owner_id", String(64), index=True),
 )
+
+# AI research sessions. A row is written when a session is *accepted*, not
+# when it finishes, so quotas count work in flight and survive a restart.
+research = Table(
+    "research", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("owner_id", String(64), nullable=False, index=True),
+    Column("status", String(16), nullable=False),
+    Column("symbol", String(16), nullable=False),
+    Column("goal", Text),
+    Column("model", String(64)),
+    Column("created_at", DateTime(timezone=True), nullable=False, index=True),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("state", JSON),           # trials, holdout verdict, notes
+    Column("error", Text),
+    Column("input_tokens", Integer, nullable=False, default=0),
+    Column("output_tokens", Integer, nullable=False, default=0),
+)
+
+TABLES = ("runs", "research")
+IN_FLIGHT = ("queued", "running")
 
 
 def normalise_url(url):
@@ -112,6 +133,7 @@ class RunStore:
         self._saves = 0
         metadata.create_all(self.engine)
         self._lock_down()
+        self.research_mark_interrupted()
         self.prune()
 
     def _lock_down(self):
@@ -125,13 +147,15 @@ class RunStore:
         """
         if self.dialect != "postgresql":
             return
-        try:
-            with self.engine.begin() as conn:
-                conn.exec_driver_sql(
-                    "ALTER TABLE runs ENABLE ROW LEVEL SECURITY")
-        except Exception:
-            log.exception("could not enable row-level security on runs; "
-                          "on Supabase the table may be publicly reachable")
+        for table in TABLES:
+            try:
+                with self.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            except Exception:
+                log.exception("could not enable row-level security on %s; on "
+                              "Supabase the table may be publicly reachable",
+                              table)
 
     @property
     def dialect(self):
@@ -246,10 +270,99 @@ class RunStore:
         with self.engine.begin() as conn:
             removed = conn.execute(
                 delete(runs).where(runs.c.submitted_at < cutoff)).rowcount
+            removed += conn.execute(
+                delete(research).where(research.c.created_at < cutoff,
+                                       research.c.status.notin_(IN_FLIGHT))
+            ).rowcount
         if removed:
             log.info("pruned %d runs older than %d days",
                      removed, self.retention_days)
         return removed
+
+    # ── Research sessions ─────────────────────────────────────────────────
+
+    def research_create(self, run_id, owner_id, symbol, goal, model):
+        with self.engine.begin() as conn:
+            conn.execute(insert(research).values(
+                id=run_id, owner_id=owner_id, status="queued", symbol=symbol,
+                goal=goal, model=model, created_at=datetime.now(timezone.utc),
+                input_tokens=0, output_tokens=0))
+
+    def research_finish(self, run_id, status, state=None, error=None):
+        state = _finite(state) if state else None
+        with self.engine.begin() as conn:
+            conn.execute(update(research).where(research.c.id == run_id).values(
+                status=status, state=state, error=error,
+                finished_at=datetime.now(timezone.utc),
+                input_tokens=(state or {}).get("input_tokens", 0),
+                output_tokens=(state or {}).get("output_tokens", 0)))
+
+    def research_set_status(self, run_id, status):
+        with self.engine.begin() as conn:
+            conn.execute(update(research).where(research.c.id == run_id)
+                         .values(status=status))
+
+    def research_get(self, run_id):
+        with self.engine.connect() as conn:
+            row = conn.execute(select(research).where(
+                research.c.id == run_id)).mappings().first()
+        return None if row is None else self._research_out(row)
+
+    def research_list(self, owner_id, limit=20):
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(research).where(research.c.owner_id == owner_id)
+                .order_by(research.c.created_at.desc()).limit(limit)
+            ).mappings().all()
+        out = []
+        for r in rows:
+            final = (r["state"] or {}).get("final") or {}
+            out.append({"job_id": r["id"], "status": r["status"],
+                        "symbol": r["symbol"],
+                        "created_at": _iso(r["created_at"]),
+                        "trials": len((r["state"] or {}).get("trials", [])),
+                        "passed": final.get("passed"),
+                        "pick": final.get("kind")})
+        return out
+
+    def research_usage(self, since, owner_id=None):
+        """Sessions that count against a quota since `since`.
+
+        A session that failed before spending a token (the model was down,
+        say) is not charged: the user got nothing for it.
+        """
+        q = select(func.count()).select_from(research).where(
+            research.c.created_at >= since,
+            or_(research.c.status != "failed", research.c.input_tokens > 0))
+        if owner_id is not None:
+            q = q.where(research.c.owner_id == owner_id)
+        with self.engine.connect() as conn:
+            return conn.execute(q).scalar()
+
+    def research_in_flight(self, owner_id):
+        with self.engine.connect() as conn:
+            return conn.execute(select(func.count()).select_from(research).where(
+                research.c.owner_id == owner_id,
+                research.c.status.in_(IN_FLIGHT))).scalar()
+
+    def research_mark_interrupted(self):
+        """Sessions run in this process. After a restart, any still marked in
+        flight died with the old process; close them so they stop blocking
+        their owner's next session."""
+        with self.engine.begin() as conn:
+            conn.execute(update(research).where(
+                research.c.status.in_(IN_FLIGHT)).values(
+                status="failed", error="Interrupted by a server restart.",
+                finished_at=datetime.now(timezone.utc)))
+
+    @staticmethod
+    def _research_out(row):
+        return {"job_id": row["id"], "kind": "research", "status": row["status"],
+                "symbol": row["symbol"], "goal": row["goal"],
+                "model": row["model"],
+                "created_at": _iso(row["created_at"]),
+                "finished_at": _iso(row["finished_at"]),
+                "error": row["error"], "state": row["state"]}
 
     def close(self):
         self.engine.dispose()

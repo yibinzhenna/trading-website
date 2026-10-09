@@ -15,7 +15,10 @@ on another, returning 404 for a job that is running perfectly well next door.
 Finished runs are in the database and readable from anywhere.
 """
 
+import secrets
+import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
 
@@ -29,12 +32,14 @@ from api.auth import User, optional_user, require_user
 from api.security import enforce_submission_limits, require_admin
 from quantlab import StrategySpec, __version__, backtest, engine
 from quantlab.providers import ProviderError
+from quantlab.research import run_research
 from quantlab.strategies import StrategyError, compile_strategy
 
 @asynccontextmanager
 async def lifespan(_app):
     yield
     deps.jobs.shutdown(wait=False)
+    deps.research_jobs.shutdown(wait=False)
     deps.runs.close()
 
 
@@ -292,17 +297,23 @@ def client_config():
     """What the browser needs to offer sign-in, or `auth: null` when
     accounts are off. The publishable key is designed to be public."""
     s = deps.settings
+    research = None
+    if deps.research_enabled():
+        research = {"daily_limit": s.research_daily_limit,
+                    "max_trials": s.research_max_trials}
     if not (deps.verifier and s.supabase_publishable_key):
-        return {"auth": None}
+        return {"auth": None, "research": None}
     return {"auth": {"provider": "supabase", "url": s.supabase_url,
-                     "publishable_key": s.supabase_publishable_key}}
+                     "publishable_key": s.supabase_publishable_key},
+            "research": research}
 
 
 @app.get("/me", tags=["account"])
 def me(user: User = Depends(require_user)):
     return {"id": user.id, "email": user.email,
             "rate_limit": deps.settings.user_rate_limit,
-            "rate_window": deps.settings.rate_window}
+            "rate_window": deps.settings.rate_window,
+            "research": _research_quota(user)}
 
 
 @app.get("/me/runs", tags=["account"])
@@ -323,6 +334,138 @@ def delete_run(run_id: str, user: User = Depends(require_user)):
     if not deps.runs.delete(run_id, user.id):
         raise HTTPException(404, f"No such run: {run_id}")
     deps.jobs.forget(run_id)
+
+
+# ── AI research ────────────────────────────────────────────────────────────
+# Costs real money per session, so: signed-in users only, a daily quota per
+# user, a daily ceiling across everyone, one session at a time per user, and
+# a short queue. Every limit is checked before anything is spent.
+
+_research_gate = threading.Lock()
+
+
+def _day_ago():
+    return datetime.now(timezone.utc) - timedelta(days=1)
+
+
+def _research_quota(user):
+    if not deps.research_enabled():
+        return None
+    used = deps.runs.research_usage(_day_ago(), user.id)
+    limit = deps.settings.research_daily_limit
+    return {"used": used, "limit": limit, "remaining": max(0, limit - used)}
+
+
+def _require_research():
+    if deps.research_client is None:
+        raise HTTPException(503, "AI research is not enabled on this server")
+    if deps.verifier is None:
+        raise HTTPException(503, "AI research needs accounts enabled")
+
+
+def _run_research_job(job_id, client, bars, req, max_trials):
+    deps.runs.research_set_status(job_id, "running")
+
+    def progress(state):
+        job = deps.research_jobs.get(job_id)
+        if job is not None:
+            # A snapshot: the poller reads it while this thread appends.
+            job.meta["state"] = {**state, "trials": list(state["trials"])}
+
+    try:
+        return run_research(
+            client, bars, req.symbol, req.goal,
+            model=deps.settings.research_model, max_trials=max_trials,
+            token_budget=deps.settings.research_token_budget,
+            on_progress=progress)
+    except ValueError:
+        raise
+    except Exception as e:
+        # API errors can carry request details; the client gets a plain
+        # message and the log gets the rest.
+        import logging
+        logging.getLogger("quantlab.research").exception("research %s", job_id)
+        raise RuntimeError("The research model could not be reached. "
+                           "Try again later.") from e
+
+
+@app.post("/research", status_code=202, tags=["research"])
+def start_research(req: schemas.ResearchRequest,
+                   user: User = Depends(require_user)):
+    """Start an AI research session on a symbol. Poll GET /research/{id}."""
+    _require_research()
+    s = deps.settings
+    max_trials = min(req.trials, s.research_max_trials)
+
+    # Bars first: an unusable symbol must fail here, free, not as a session
+    # that bills tokens and then cannot split its data.
+    try:
+        bars = deps.build_provider().bars(req.symbol, "day", limit=s.max_bars)
+    except ProviderError as e:
+        raise HTTPException(400, f"Provider unavailable: {e}") from e
+    if len(bars) < 2 * s.min_bars:
+        raise HTTPException(
+            422, f"{req.symbol}: only {len(bars)} bars; research needs at "
+                 f"least {2 * s.min_bars} to keep a holdout")
+
+    # Check-then-insert under one lock, or two quick requests both pass.
+    with _research_gate:
+        if deps.runs.research_in_flight(user.id):
+            raise HTTPException(
+                429, "You already have a research session running.")
+        quota = _research_quota(user)
+        if quota["remaining"] <= 0:
+            raise HTTPException(
+                429, f"Daily research limit reached ({quota['limit']} per "
+                     "24 hours).", headers={"Retry-After": "3600"})
+        if deps.runs.research_usage(_day_ago()) >= s.research_global_daily_limit:
+            raise HTTPException(
+                429, "The site has reached today's research capacity. "
+                     "Try again tomorrow.", headers={"Retry-After": "3600"})
+        if deps.research_jobs.in_flight() >= s.research_max_queue:
+            raise HTTPException(
+                429, "The research queue is full. Try again in a few minutes.",
+                headers={"Retry-After": "60"})
+        job_id = secrets.token_hex(8)
+        deps.runs.research_create(job_id, user.id, req.symbol, req.goal,
+                                  s.research_model)
+
+    deps.research_jobs.submit(
+        "research", _run_research_job, job_id, deps.research_client, bars,
+        req, max_trials, job_id=job_id,
+        meta={"symbol": req.symbol, "goal": req.goal})
+    return {"job_id": job_id, "status": "queued",
+            "quota": _research_quota(user)}
+
+
+@app.get("/research/{job_id}", tags=["research"])
+def get_research(job_id: str):
+    """A session, live while it runs, then from the database. Readable by
+    anyone holding the id, like a backtest link; the owner is not shown."""
+    job = deps.research_jobs.get(job_id)
+    saved = deps.runs.research_get(job_id)
+    if job is None and saved is None:
+        raise HTTPException(404, f"No such research session: {job_id}")
+    if job is not None and job.status not in ("done", "failed"):
+        out = dict(saved or {"job_id": job_id, "kind": "research",
+                             "symbol": job.meta.get("symbol"),
+                             "goal": job.meta.get("goal")})
+        out.update(status=job.status, state=job.meta.get("state"))
+        return out
+    if saved is not None:
+        return saved
+    out = {"job_id": job_id, "kind": "research", "status": job.status,
+           "symbol": job.meta.get("symbol"), "goal": job.meta.get("goal"),
+           "error": job.error,
+           "state": job.result if job.status == "done" else job.meta.get("state")}
+    return out
+
+
+@app.get("/me/research", tags=["research"])
+def my_research(limit: int = Query(20, ge=1, le=100),
+                user: User = Depends(require_user)):
+    return {"sessions": deps.runs.research_list(user.id, limit),
+            "quota": _research_quota(user)}
 
 
 @app.get("/jobs", response_model=list[schemas.JobStatus], tags=["admin"],
