@@ -104,6 +104,29 @@ def test_fills_at_next_open():
     assert equity[-1] == pytest.approx(100.0)
 
 
+@pytest.mark.parametrize("signal", [
+    lambda i, b, p: None,                                    # never trades
+    lambda i, b, p: "BUY" if i == 0 else ("SELL" if i == 5 else None),
+    lambda i, b, p: "BUY" if i == 0 else None,               # open at the end
+])
+def test_one_equity_point_per_bar(signal):
+    """The chart plots the curve against the bar dates. A position still open
+    at the last bar used to append its close-out as an extra point."""
+    bars = ramp(20)
+    equity, _ = engine.run(bars, signal, cash=1000.0,
+                           cost_model={"slippage_bps": 10})
+    assert len(equity) == len(bars) == len(engine.buy_and_hold(bars))
+
+
+def test_open_position_closed_out_net_of_slippage():
+    bars = flat(10)
+    equity, trades = engine.run(bars, lambda i, b, p: "BUY" if i == 0 else None,
+                                cash=1000.0, cost_model={"slippage_bps": 100})
+    # In at +1%, out at -1%, on a flat price.
+    assert len(trades) == 1
+    assert equity[-1] == pytest.approx(1000.0 * 0.99 / 1.01)
+
+
 # ── Costs ──────────────────────────────────────────────────────────────────
 
 def test_costs_reduce_pnl():

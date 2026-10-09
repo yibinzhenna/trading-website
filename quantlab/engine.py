@@ -176,13 +176,15 @@ def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day",
         mark = bars[i + 1]["c"]
         equity.append(shares * mark if shares > 0 else equity[-1])
 
-    # Close anything still open at the final bar.
+    # Close anything still open at the final bar. This replaces that bar's
+    # mark rather than appending: one point per bar, so the curve lines up
+    # with the dates and the benchmark. Appending gave the last bar two.
     if shares > 0 and bars:
         fill = bars[-1]["c"] * (1 - slip_bps / 10000.0)
         proceeds = shares * fill - per_trade
         trades.append(proceeds - entry_cost)
         rets.append((proceeds - entry_cost) / entry_cost if entry_cost else 0.0)
-        equity.append(proceeds)
+        equity[-1] = proceeds
 
     if with_returns:
         return equity, trades, rets
