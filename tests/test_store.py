@@ -132,7 +132,7 @@ class FakeJob:
 
 
 def iso(dt):
-    return dt.isoformat(timespec="seconds")
+    return dt.isoformat(timespec="milliseconds")
 
 
 def store(tmp_path, **kw):
@@ -171,9 +171,22 @@ def test_retention_zero_keeps_everything(tmp_path):
 
 def test_timestamps_round_trip_with_timezone(tmp_path):
     s = store(tmp_path)
-    stamp = "2026-01-02T03:04:05+00:00"
+    stamp = "2026-01-02T03:04:05.123+00:00"
     s.save(FakeJob("d" * 16, stamp))
     assert s.get("d" * 16)["submitted_at"] == stamp
+
+
+def test_owner_listing_is_newest_first_within_a_second(tmp_path):
+    """Two quick runs used to share a timestamp to the second, leaving their
+    order to the random id."""
+    s = store(tmp_path)
+    t0 = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    for i, (ms, run_id) in enumerate([(100, "f" * 16), (900, "0" * 16)]):
+        job = FakeJob(run_id, iso(t0 + timedelta(milliseconds=ms)))
+        job.meta["owner_id"] = "alice"
+        s.save(job)
+    assert [r["job_id"] for r in s.list_for_owner("alice")] == ["0" * 16, "f" * 16]
+    assert s.list_for_owner("bob") == []
 
 
 def test_infinite_metrics_save_as_null(tmp_path):

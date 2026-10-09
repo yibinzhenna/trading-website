@@ -21,9 +21,10 @@ import threading
 import time
 from collections import deque
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 
 from api import deps
+from api.auth import optional_user
 
 
 # ── Admin ──────────────────────────────────────────────────────────────────
@@ -125,12 +126,17 @@ class RateLimiter:
             del self._hits[key]
 
 
-def enforce_submission_limits(request: Request):
+def enforce_submission_limits(request: Request,
+                              user=Depends(optional_user)):
     """Gate for POST /backtest: global capacity first, then per-client rate.
 
     The global cap is the one that actually protects the instance. Per-client
     limits are fairness, and a determined client can rotate addresses; a cap
     on work in flight holds regardless of who is asking.
+
+    Signed-in users are limited per account rather than per address, with a
+    larger allowance. An account is a far better identity than an IP: a
+    whole office shares one address, and one person can hop between several.
     """
     in_flight = deps.jobs.in_flight()
     if in_flight >= deps.settings.max_inflight:
@@ -138,7 +144,10 @@ def enforce_submission_limits(request: Request):
             429, "The server is at capacity. Try again in a few seconds.",
             headers={"Retry-After": "5"})
 
-    allowed, retry = deps.limiter.check(client_key(request))
+    if user is not None:
+        allowed, retry = deps.user_limiter.check(f"user:{user.id}")
+    else:
+        allowed, retry = deps.limiter.check(client_key(request))
     if not allowed:
         raise HTTPException(
             429, f"Too many backtests. Try again in {retry}s.",

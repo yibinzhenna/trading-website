@@ -11,8 +11,15 @@
 <div class="wrap">
 
   <header>
-    <h1>quantlab</h1>
-    <p>Backtest a strategy and find out whether the result is an edge or a fitted curve.</p>
+    <div>
+      <h1>quantlab</h1>
+      <p>Backtest a strategy and find out whether the result is an edge or a fitted curve.</p>
+    </div>
+    <div class="account" id="account" hidden>
+      <span class="who" id="who"></span>
+      <button class="ghost" id="sign-in" type="button">Sign in</button>
+      <button class="ghost" id="sign-out" type="button" hidden>Sign out</button>
+    </div>
   </header>
 
   <div class="card">
@@ -39,6 +46,18 @@
       <div><button id="run" type="submit">Run backtest</button></div>
     </form>
     <p class="status" id="status"></p>
+  </div>
+
+  <div class="card" id="my-runs" hidden>
+    <h2>Your runs</h2>
+    <div class="scroll">
+      <table id="runs-table">
+        <thead><tr><th>When</th><th>Symbol</th><th>Strategy</th><th>Verdict</th>
+          <th class="num">Return</th><th class="num" title="Return minus buy &amp; hold">Excess</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="hint" id="runs-empty">Backtests you run while signed in are saved here.</p>
   </div>
 
   <div id="results" hidden>
@@ -100,6 +119,32 @@
   </div>
 </div>
 
+<dialog id="auth-dialog" aria-labelledby="auth-title">
+  <form id="auth-form" class="auth">
+    <h2 id="auth-title">Sign in</h2>
+    <div id="auth-email-row">
+      <label for="auth-email">Email</label>
+      <input id="auth-email" type="email" autocomplete="email">
+    </div>
+    <div id="auth-password-row">
+      <label for="auth-password">Password</label>
+      <input id="auth-password" type="password" minlength="8">
+    </div>
+    <p class="status" id="auth-status" role="status"></p>
+    <div class="auth-actions">
+      <button type="submit" id="auth-submit">Sign in</button>
+      <button type="button" class="ghost" id="auth-cancel">Cancel</button>
+    </div>
+    <div class="auth-links">
+      <button type="button" class="link" id="auth-toggle">Create an account instead</button>
+      <button type="button" class="link" id="auth-forgot">Forgot password?</button>
+    </div>
+    <p class="hint">Optional. An account keeps a history of your runs and gives
+       you a larger allowance.</p>
+  </form>
+</dialog>
+
+<script src="/static/account.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

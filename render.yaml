@@ -37,8 +37,18 @@ services:
         value: "8"
       # Postgres for finished runs. Unset falls back to SQLite on the
       # ephemeral disk, which forgets everything on each restart or deploy.
+      # On Supabase use the *Session pooler* string (port 5432): Render has
+      # no IPv6, and the direct connection is IPv6-only.
       # sync: false — Render asks for the value; it is never in this file.
       - key: DATABASE_URL
         sync: false
+      # Supabase Auth. Unset SUPABASE_URL = accounts off, all anonymous.
+      # The publishable key is meant to be public; it ships to browsers.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: QUANTLAB_USER_RATE_LIMIT
+        value: "60"
       - key: QUANTLAB_RUN_RETENTION_DAYS
         value: "30"

@@ -85,7 +85,7 @@ def _iso(value):
         return None
     if value.tzinfo is None:          # SQLite drops the offset on the way out
         value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat(timespec="seconds")
+    return value.isoformat(timespec="milliseconds")
 
 
 class RunStore:
@@ -100,12 +100,38 @@ class RunStore:
         if url.startswith("sqlite"):
             # Writes come from job threads, reads from request threads.
             kwargs["connect_args"] = {"check_same_thread": False}
+        elif ":6543/" in url:
+            # Supabase's transaction pooler hands each transaction to a
+            # different backend, so server-side prepared statements break.
+            # The session pooler (5432) is the right choice for a long-lived
+            # server; this only keeps the wrong one from failing obscurely.
+            kwargs["connect_args"] = {"prepare_threshold": None}
         self.engine = create_engine(url, **kwargs)
         self.retention_days = retention_days
         self.prune_every = prune_every
         self._saves = 0
         metadata.create_all(self.engine)
+        self._lock_down()
         self.prune()
+
+    def _lock_down(self):
+        """Close the table to Supabase's auto-generated REST API.
+
+        Supabase exposes every table in `public` over HTTP, reachable with
+        the publishable key, which ships to every browser. Without row-level
+        security that is the whole runs table, readable and writable by
+        anyone. RLS with no policies denies those roles everything; this
+        server connects as the table owner and is unaffected.
+        """
+        if self.dialect != "postgresql":
+            return
+        try:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE runs ENABLE ROW LEVEL SECURITY")
+        except Exception:
+            log.exception("could not enable row-level security on runs; "
+                          "on Supabase the table may be publicly reachable")
 
     @property
     def dialect(self):
@@ -136,6 +162,8 @@ class RunStore:
             "series": _finite(series),
             "error": job.error,
             "duration_sec": job.duration_sec,
+            # A column, never echoed back to whoever holds the link.
+            "owner_id": meta.get("owner_id"),
         }
         with self.engine.begin() as conn:
             if conn.execute(select(runs.c.id).where(runs.c.id == job.id)).first():
@@ -167,6 +195,38 @@ class RunStore:
         else:
             out["result"] = row["result"]
         return out
+
+    def list_for_owner(self, owner_id, limit=50):
+        """A user's runs, newest first, summarised for a listing."""
+        cols = (runs.c.id, runs.c.status, runs.c.symbol, runs.c.kind,
+                runs.c.passed, runs.c.submitted_at, runs.c.result,
+                runs.c.error)
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(*cols).where(runs.c.owner_id == owner_id)
+                .order_by(runs.c.submitted_at.desc(), runs.c.id)
+                .limit(limit)).mappings().all()
+        out = []
+        for r in rows:
+            res = r["result"] or {}
+            out.append({
+                "job_id": r["id"], "status": r["status"],
+                "symbol": r["symbol"], "kind": r["kind"],
+                "passed": r["passed"],
+                "submitted_at": _iso(r["submitted_at"]),
+                "total_return_pct": res.get("total_return_pct"),
+                "excess_return_pct": res.get("excess_return_pct"),
+                "oos_sharpe": res.get("oos_sharpe"),
+                "error": r["error"],
+            })
+        return out
+
+    def delete(self, run_id, owner_id):
+        """Delete a run if, and only if, it belongs to `owner_id`."""
+        with self.engine.begin() as conn:
+            return conn.execute(
+                delete(runs).where(runs.c.id == run_id,
+                                   runs.c.owner_id == owner_id)).rowcount > 0
 
     def series(self, run_id):
         with self.engine.connect() as conn:

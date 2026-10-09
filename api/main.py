@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
+from api.auth import User, optional_user, require_user
 from api.security import enforce_submission_limits, require_admin
 from quantlab import StrategySpec, __version__, backtest, engine
 from quantlab.providers import ProviderError
@@ -158,7 +159,8 @@ def _run_backtest(req: schemas.BacktestRequest):
 @app.post("/backtest", response_model=schemas.JobRef, status_code=202,
           tags=["backtest"],
           dependencies=[Depends(enforce_submission_limits)])
-def submit_backtest(req: schemas.BacktestRequest):
+def submit_backtest(req: schemas.BacktestRequest,
+                    user: User | None = Depends(optional_user)):
     """Queue a backtest. Returns immediately with a job id to poll."""
     # Compile now so a bad spec fails fast with a 422 rather than becoming a
     # job that fails thirty seconds later. compile_strategy, not resolved():
@@ -179,16 +181,18 @@ def submit_backtest(req: schemas.BacktestRequest):
         "backtest", _run_backtest, req,
         meta={"symbol": req.symbol, "kind": req.kind,
               "interval": req.interval,
-              "request": req.model_dump(mode="json")})
+              "request": req.model_dump(mode="json"),
+              "owner_id": user.id if user else None})
     return schemas.JobRef(**job.to_dict(include_result=False))
 
 
 def _public(payload):
     """Strip what a public reader should not get: the equity curves (served
-    separately) and server tracebacks (paths and source lines, for the log)."""
+    separately), server tracebacks (paths and source lines, for the log) and
+    who submitted it (a link is shareable; the account behind it is not)."""
     payload = dict(payload)
     payload["meta"] = {k: v for k, v in payload.get("meta", {}).items()
-                       if k != "traceback"}
+                       if k not in ("traceback", "owner_id")}
     if isinstance(payload.get("result"), dict):
         payload["result"] = {k: v for k, v in payload["result"].items()
                              if k != "_series"}
@@ -228,6 +232,46 @@ def get_equity(job_id: str):
     if not series:
         raise HTTPException(404, "No series recorded for this job")
     return series
+
+
+# ── Accounts ───────────────────────────────────────────────────────────────
+
+@app.get("/config", tags=["meta"])
+def client_config():
+    """What the browser needs to offer sign-in, or `auth: null` when
+    accounts are off. The publishable key is designed to be public."""
+    s = deps.settings
+    if not (deps.verifier and s.supabase_publishable_key):
+        return {"auth": None}
+    return {"auth": {"provider": "supabase", "url": s.supabase_url,
+                     "publishable_key": s.supabase_publishable_key}}
+
+
+@app.get("/me", tags=["account"])
+def me(user: User = Depends(require_user)):
+    return {"id": user.id, "email": user.email,
+            "rate_limit": deps.settings.user_rate_limit,
+            "rate_window": deps.settings.rate_window}
+
+
+@app.get("/me/runs", tags=["account"])
+def my_runs(limit: int = Query(50, ge=1, le=200),
+            user: User = Depends(require_user)):
+    """Your saved runs, newest first. Only finished runs appear: a run is
+    written when it completes."""
+    return deps.runs.list_for_owner(user.id, limit)
+
+
+@app.delete("/runs/{run_id}", status_code=204, tags=["account"])
+def delete_run(run_id: str, user: User = Depends(require_user)):
+    """Delete one of your runs, and with it the link to it.
+
+    Someone else's run and a run that does not exist both return 404, so
+    the endpoint cannot be used to probe which ids exist.
+    """
+    if not deps.runs.delete(run_id, user.id):
+        raise HTTPException(404, f"No such run: {run_id}")
+    deps.jobs.forget(run_id)
 
 
 @app.get("/jobs", response_model=list[schemas.JobStatus], tags=["admin"],

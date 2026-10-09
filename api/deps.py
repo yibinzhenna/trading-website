@@ -46,6 +46,16 @@ class Settings:
         self.database_url = os.getenv("DATABASE_URL", "sqlite:///quantlab.db")
         # Runs older than this are deleted. 0 keeps them forever.
         self.run_retention_days = int(os.getenv("QUANTLAB_RUN_RETENTION_DAYS", 30))
+        # Supabase Auth. Unset URL = accounts off, everyone anonymous.
+        # The publishable key is public by design: it ships to the browser.
+        self.supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
+        self.supabase_publishable_key = (os.getenv("SUPABASE_PUBLISHABLE_KEY")
+                                         or os.getenv("SUPABASE_ANON_KEY", ""))
+        # Only for projects still signing sessions with the legacy HS256
+        # secret. Projects on asymmetric signing keys leave this unset.
+        self.supabase_jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
+        # Signed-in users get their own, larger allowance.
+        self.user_rate_limit = int(os.getenv("QUANTLAB_USER_RATE_LIMIT", 60))
 
 
 settings = Settings()
@@ -65,13 +75,22 @@ runs = _make_runs()
 jobs = JobStore(workers=settings.workers, on_finish=_persist)
 
 
-def _make_limiter():
+def _make_limiter(limit=None):
     # Imported here: api.security imports this module.
     from api.security import RateLimiter
-    return RateLimiter(settings.rate_limit, settings.rate_window)
+    return RateLimiter(limit or settings.rate_limit, settings.rate_window)
+
+
+def _make_verifier():
+    if not settings.supabase_url:
+        return None
+    from api.auth import TokenVerifier
+    return TokenVerifier(settings.supabase_url, settings.supabase_jwt_secret)
 
 
 limiter = _make_limiter()
+user_limiter = _make_limiter(settings.user_rate_limit)
+verifier = _make_verifier()
 
 _PROVIDER_KWARGS = {"local": lambda s: {"root": s.data_root}}
 _providers = {}
@@ -108,7 +127,7 @@ def reset_for_tests(**overrides):
     so a second test module sharing the singleton would hit "cannot schedule
     new futures after shutdown" the moment it submitted anything.
     """
-    global cache, jobs, limiter, runs
+    global cache, jobs, limiter, runs, user_limiter, verifier
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
@@ -116,5 +135,7 @@ def reset_for_tests(**overrides):
     runs = _make_runs()
     jobs = JobStore(workers=settings.workers, on_finish=_persist)
     limiter = _make_limiter()
+    user_limiter = _make_limiter(settings.user_rate_limit)
+    verifier = _make_verifier()
     _providers.clear()
     return cache

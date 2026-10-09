@@ -74,13 +74,15 @@ async function run(event) {
   try {
     const job = await api("/backtest", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json",
+                 ...(await Account.headers()) },
       body: JSON.stringify(payload),
     });
     const done = await poll(job.job_id);
     if (done.status === "failed") throw new Error(done.error);
     $("status").textContent = `Done in ${done.duration_sec}s.`;
     await show(done);
+    if (Account.user()) loadMyRuns();
   } catch (err) {
     $("status").className = "status err";
     $("status").textContent = err.message;
@@ -132,7 +134,11 @@ function fillForm(req) {
 
 async function openSharedRun() {
   const id = new URLSearchParams(location.search).get("run");
-  if (!id) return;
+  if (id) await openRun(id);
+}
+
+async function openRun(id) {
+  $("status").className = "status";
   $("status").textContent = "Loading saved result…";
   try {
     const job = await api(`/backtest/${encodeURIComponent(id)}`);
@@ -158,6 +164,66 @@ async function copyLink() {
   }
   setTimeout(() => { btn.textContent = "Copy link"; }, 1800);
 }
+
+/* ── Your runs (signed in only) ───────────────────────────────────────── */
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+async function loadMyRuns() {
+  try {
+    const runs = await api("/me/runs", { headers: await Account.headers() });
+    $("runs-empty").hidden = runs.length > 0;
+    $("runs-table").hidden = runs.length === 0;
+    $("runs-table").querySelector("tbody").innerHTML = runs.map((r) => {
+      const when = new Date(r.submitted_at).toLocaleString(undefined, {
+        month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      const verdict = r.status === "failed" ? `<span class="no">ERROR</span>`
+        : `<span class="${r.passed ? "ok" : "no"}">${r.passed ? "PASS" : "FAIL"}</span>`;
+      const num = (v) => (typeof v === "number" ? pct(v) : "—");
+      return `<tr data-run="${esc(r.job_id)}">
+        <td>${esc(when)}</td><td>${esc(r.symbol)}</td>
+        <td>${esc(r.kind.replace(/_/g, " "))}</td><td>${verdict}</td>
+        <td class="num">${num(r.total_return_pct)}</td>
+        <td class="num">${num(r.excess_return_pct)}</td>
+        <td class="num"><button class="ghost" type="button" data-delete="${esc(r.job_id)}"
+            title="Delete this run and its link">Delete</button></td></tr>`;
+    }).join("");
+  } catch (err) {
+    $("runs-empty").hidden = false;
+    $("runs-empty").textContent = `Could not load your runs: ${err.message}`;
+  }
+}
+
+$("runs-table").addEventListener("click", async (event) => {
+  const del = event.target.closest("[data-delete]");
+  if (del) {
+    if (!confirm("Delete this run? Anyone you shared its link with will lose it too.")) return;
+    try {
+      const r = await fetch(`/runs/${encodeURIComponent(del.dataset.delete)}`, {
+        method: "DELETE", headers: await Account.headers() });
+      if (!r.ok && r.status !== 404) throw new Error(`${r.status} ${r.statusText}`);
+      if (new URLSearchParams(location.search).get("run") === del.dataset.delete) {
+        $("results").hidden = true;
+        history.replaceState(null, "", location.pathname);
+      }
+      loadMyRuns();
+    } catch (err) {
+      alert(`Could not delete: ${err.message}`);
+    }
+    return;
+  }
+  const row = event.target.closest("tr[data-run]");
+  if (row) {
+    await openRun(row.dataset.run);
+    $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+});
+
+Account.onChange((user) => {
+  $("my-runs").hidden = !user;
+  if (user) loadMyRuns();
+});
 
 /* ── Render ────────────────────────────────────────────────────────────── */
 
@@ -265,3 +331,5 @@ Promise.all([loadStrategies(), loadSymbols()]).then(openSharedRun, (e) => {
   $("status").className = "status err";
   $("status").textContent = `Could not reach the API: ${e.message}`;
 });
+// Separate from the above: if sign-in cannot load, backtests still work.
+Account.init().catch((e) => console.warn("Accounts unavailable:", e.message));

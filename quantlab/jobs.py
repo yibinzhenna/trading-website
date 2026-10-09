@@ -34,7 +34,7 @@ TERMINAL = (DONE, FAILED)
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 class Job:
@@ -133,6 +133,15 @@ class JobStore:
     def get(self, job_id):
         with self._lock:
             return self._jobs.get(job_id)
+
+    def forget(self, job_id):
+        """Drop a terminal job from memory. Running jobs are kept."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None and job.status in TERMINAL:
+                del self._jobs[job_id]
+                return True
+        return False
 
     def list(self, limit=50):
         with self._lock:

@@ -171,6 +171,54 @@ Postgres). Runs older than `QUANTLAB_RUN_RETENTION_DAYS` are pruned.
 Saving is best effort. If the database is down the job still completes and
 its result is still served from memory; the failure is logged.
 
+### Accounts
+
+Optional, through Supabase Auth. Anonymous visitors keep everything above
+under the per-IP limit. Signing in adds:
+
+- **Your runs**: every backtest started while signed in, newest first, with
+  a delete button. Deleting a run also kills its link.
+- **A per-account limit** (`QUANTLAB_USER_RATE_LIMIT`, default 60 per window)
+  in place of the per-IP one. An account is a better identity than an
+  address: an office shares one IP, and one person can hop between several.
+
+The browser signs in with supabase-js and sends its access token as a Bearer
+header. The server verifies it locally (`api/auth.py`) against the project's
+published signing keys, fetched once and cached: signature, expiry, issuer,
+audience, and that it is a user session rather than the anon or service key.
+A bad or expired token is a 401, never a silent fall back to anonymous.
+
+Who submitted a run is stored but never returned: a link is shareable, the
+account behind it is not. Deleting someone else's run and deleting one that
+does not exist both return 404, so ids cannot be probed.
+
+On startup against Postgres the server enables row-level security on its
+table. Supabase serves every `public` table over its REST API to anyone
+holding the publishable key, which ships to every browser; RLS with no
+policies closes that, while the server, as the table owner, is unaffected.
+
+#### Setting up Supabase
+
+1. Create a project at supabase.com.
+2. **Connect → Session pooler**: copy the URI, put your database password
+   in it, and set it as `DATABASE_URL`. Not the direct connection — it is
+   IPv6-only and Render cannot reach it.
+3. **Project Settings → API**: set `SUPABASE_URL` to the project URL and
+   `SUPABASE_PUBLISHABLE_KEY` to the publishable key (`sb_publishable_…`;
+   the legacy anon key also works).
+4. **Authentication → URL Configuration**: set the Site URL to the deployed
+   address, so confirmation and password-reset emails link back to it.
+5. Redeploy. `/health` should report `postgresql`, and a **Sign in** button
+   appears top right.
+
+Supabase's built-in email sender is rate-limited and meant for testing. For
+real sign-ups, add an SMTP provider under Authentication → Emails.
+
+Free Supabase projects pause after a week without activity; a paused
+project takes sign-in and saved runs down with it until restored from the
+dashboard. Older projects that still sign sessions with the legacy shared
+secret need `SUPABASE_JWT_SECRET` as well.
+
 ## Web UI
 
 ```bash
@@ -291,6 +339,10 @@ proxies, or leave both unset to use the socket address.
 | `QUANTLAB_TRUST_PROXY_HOPS` | `0` | Trusted appending proxies; 0 uses the socket address |
 | `DATABASE_URL` | `sqlite:///quantlab.db` | Where finished runs are kept; Postgres in production |
 | `QUANTLAB_RUN_RETENTION_DAYS` | `30` | Delete older runs; 0 keeps them forever |
+| `SUPABASE_URL` | *(unset)* | Enables accounts; unset means everyone is anonymous |
+| `SUPABASE_PUBLISHABLE_KEY` | *(unset)* | Browser key (`SUPABASE_ANON_KEY` also read) |
+| `SUPABASE_JWT_SECRET` | *(unset)* | Only for projects on the legacy HS256 secret |
+| `QUANTLAB_USER_RATE_LIMIT` | `60` | Submissions per signed-in user per window |
 
 ## Known issues
 
@@ -328,6 +380,7 @@ api/
   schemas.py           request/response models and validation
   deps.py              settings, provider wiring, singletons
   store.py             saved runs (SQLite / Postgres)
+  auth.py              Supabase token verification, current user
   static/, templates/  web UI — no build step
 tests/                 114 tests, hermetic, no network
 ```
