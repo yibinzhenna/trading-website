@@ -97,7 +97,7 @@ def test_custom_criteria_change_the_verdict(client):
     base = {"symbol": "SPY", "kind": "trend_following"}
     loose = run_to_completion(client, base)["result"]
     strict = run_to_completion(
-        client, dict(base, criteria={"min_sharpe": 50}))["result"]
+        client, dict(base, criteria={"min_sharpe": 9}))["result"]
 
     def sharpe_ok(res):
         return next(c["passed"] for c in res["checks"]
