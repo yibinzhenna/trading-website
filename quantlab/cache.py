@@ -122,6 +122,10 @@ class CachedProvider:
         self.cache = cache or BarCache()
         self.name = getattr(provider, "name", "unknown")
 
+    def symbols(self):
+        fn = getattr(self.provider, "symbols", None)
+        return fn() if fn else None
+
     def bars(self, symbol, interval="day", limit=None):
         hit = self.cache.read(self.name, symbol, interval)
         if hit is not None:

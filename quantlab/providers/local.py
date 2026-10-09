@@ -75,6 +75,25 @@ class LocalProvider(DataProvider):
             self._pick(row, "v") or 0.0,
         )
 
+    def symbols(self):
+        """Every symbol with at least one file under the root, sorted.
+
+        The recorder writes one file per symbol per day (SPY_2026-09-28), so
+        the date suffix is stripped. A bare name like DEMO-TREND is kept whole
+        even though it contains a hyphen.
+        """
+        if not os.path.isdir(self.root):
+            return []
+        found = set()
+        for name in os.listdir(self.root):
+            stem, ext = os.path.splitext(name)
+            if ext.lower() not in (".jsonl", ".csv", ".json"):
+                continue
+            head, sep, tail = stem.rpartition("_")
+            is_dated = sep and len(tail) == 10 and tail[4] == "-" and tail[7] == "-"
+            found.add((head if is_dated else stem).upper())
+        return sorted(found)
+
     def bars(self, symbol, interval="day", limit=None):
         out = []
         for path in self._files(symbol):

@@ -42,6 +42,14 @@ class DataProvider(ABC):
         :raises ProviderError: the request itself failed
         """
 
+    def symbols(self):
+        """Symbols this provider can serve, or None if it cannot enumerate.
+
+        A remote vendor covers thousands of tickers and offers no cheap way to
+        list them, so None means "any ticker, ask and see" — not "none".
+        """
+        return None
+
     # ── helpers for implementations ────────────────────────────────────────
 
     @staticmethod

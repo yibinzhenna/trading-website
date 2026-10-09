@@ -142,11 +142,30 @@ def test_evaluate_reports_excess_against_benchmark():
     assert result["excess_return_pct"] < 0
 
 
+STRONG = {"sharpe": 1.5, "max_drawdown_pct": 12.0, "profit_factor": 1.8,
+          "trades": 50, "excess_return_pct": 4.0, "trade_t": 5.0,
+          "trade_t_critical": 1.68, "mean_trade_return_pct": 1.2}
+
+
 def test_grade_passes_a_strong_result():
-    passed, checks = engine.grade({
-        "sharpe": 1.5, "max_drawdown_pct": 12.0, "profit_factor": 1.8,
-        "trades": 50, "excess_return_pct": 4.0})
+    passed, checks = engine.grade(dict(STRONG))
     assert passed and all(ok for _, ok, _ in checks)
+
+
+def test_good_ratios_without_significance_fail():
+    passed, checks = engine.grade(dict(STRONG, trade_t=0.8))
+    assert not passed
+    assert any("significant" in n for n, ok, _ in checks if not ok)
+
+
+def test_t_critical_known_values():
+    assert engine.t_critical(1) == pytest.approx(6.314)
+    assert engine.t_critical(11) == pytest.approx(1.796, abs=0.002)
+
+
+def test_two_trades_need_overwhelming_consistency():
+    assert engine.trade_significance([0.05, 0.04])["significant"]
+    assert not engine.trade_significance([0.05, 0.01])["significant"]
 
 
 def test_grade_names_every_failure():
@@ -157,14 +176,10 @@ def test_grade_names_every_failure():
     assert len([c for c in checks if not c[1]]) == 5
 
 
-def test_min_trades_gate_is_enforced():
-    """Good ratios on a tiny sample must still fail — the whole point of
-    the sample-size gate."""
-    passed, checks = engine.grade({
-        "sharpe": 3.0, "max_drawdown_pct": 5.0, "profit_factor": 4.0,
-        "trades": 3, "excess_return_pct": 20.0})
+def test_trade_floor_rejects_a_couple_of_bets():
+    passed, checks = engine.grade(dict(STRONG, trades=2))
     assert not passed
-    assert any("Trades" in name for name, ok, _ in checks if not ok)
+    assert any(n.startswith("Trades") for n, ok, _ in checks if not ok)
 
 
 # ── Robustness ─────────────────────────────────────────────────────────────

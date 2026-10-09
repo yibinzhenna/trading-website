@@ -94,12 +94,16 @@ def test_equity_curves_are_stripped_from_the_response(client):
 
 
 def test_custom_criteria_change_the_verdict(client):
-    payload = {"symbol": "SPY", "kind": "trend_following",
-               "criteria": {"min_trades": 0, "min_sharpe": -10,
-                            "max_drawdown_pct": 100,
-                            "must_beat_benchmark": False}}
-    res = run_to_completion(client, payload)["result"]
-    assert res["passed"] is True
+    base = {"symbol": "SPY", "kind": "trend_following"}
+    loose = run_to_completion(client, base)["result"]
+    strict = run_to_completion(
+        client, dict(base, criteria={"min_sharpe": 50}))["result"]
+
+    def sharpe_ok(res):
+        return next(c["passed"] for c in res["checks"]
+                    if c["name"].startswith("Sharpe"))
+
+    assert sharpe_ok(loose) and not sharpe_ok(strict)
 
 
 def test_unknown_job_is_404(client):

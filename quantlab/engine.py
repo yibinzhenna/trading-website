@@ -32,8 +32,15 @@ DEFAULT_CRITERIA = {
     "min_sharpe": 1.0,
     "max_drawdown_pct": 30.0,
     "must_beat_benchmark": True,
-    "min_trades": 30,
+    # A floor, not a sample-size test. Below this there is no "strategy" to
+    # evaluate, just a couple of bets. The significance test below is what
+    # decides whether the trades that did happen could plausibly be luck.
+    "min_trades": 3,
     "min_profit_factor": 1.0,
+    # One-sided confidence that mean trade return > 0. Replaces a fixed
+    # min_trades of 30, which no daily-bar strategy over a year could reach,
+    # so it rejected everything regardless of quality.
+    "min_confidence": 0.95,
 }
 
 
@@ -126,7 +133,8 @@ def trade_stats(trades):
 
 # ── Engine ─────────────────────────────────────────────────────────────────
 
-def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day"):
+def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day",
+        with_returns=False):
     """Walk bars once, long-only, one position at a time.
 
     signal_fn(i, bars, in_position) -> "BUY" | "SELL" | None. It may only read
@@ -134,12 +142,16 @@ def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day"):
 
     Fills are modelled at the NEXT bar's open, never the signal bar's close —
     you cannot trade a price you have not seen yet.
+
+    Returns (equity, trades), or (equity, trades, trade_returns) when
+    `with_returns` is set. Trade returns are P&L over capital committed, so
+    later trades are not weighted more heavily just because equity compounded.
     """
     cost = cost_model or {}
     per_trade = float(cost.get("commission", 0.0))
     slip_bps = float(cost.get("slippage_bps", 0.0))
 
-    equity, trades = [cash], []
+    equity, trades, rets = [cash], [], []
     shares, entry_px, entry_cost = 0.0, 0.0, 0.0
 
     for i in range(len(bars) - 1):
@@ -156,6 +168,7 @@ def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day"):
             fill = price * (1 - slip_bps / 10000.0)
             proceeds = shares * fill - per_trade
             trades.append(proceeds - entry_cost)
+            rets.append((proceeds - entry_cost) / entry_cost if entry_cost else 0.0)
             shares, entry_px, entry_cost = 0.0, 0.0, 0.0
             equity.append(proceeds)
             continue
@@ -168,9 +181,91 @@ def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day"):
         fill = bars[-1]["c"] * (1 - slip_bps / 10000.0)
         proceeds = shares * fill - per_trade
         trades.append(proceeds - entry_cost)
+        rets.append((proceeds - entry_cost) / entry_cost if entry_cost else 0.0)
         equity.append(proceeds)
 
+    if with_returns:
+        return equity, trades, rets
     return equity, trades
+
+
+# ── Significance ───────────────────────────────────────────────────────────
+#
+# One-sided Student-t critical values. The engine has no dependencies, so a
+# table rather than scipy. Values between rows are interpolated in 1/df, which
+# is close to linear for the t distribution and accurate to the third decimal
+# across this range.
+
+_T_TABLE = {
+    0.90: {1: 3.078, 2: 1.886, 3: 1.638, 4: 1.533, 5: 1.476, 6: 1.440,
+           7: 1.415, 8: 1.397, 9: 1.383, 10: 1.372, 12: 1.356, 15: 1.341,
+           20: 1.325, 25: 1.316, 30: 1.310, 40: 1.303, 60: 1.296,
+           120: 1.289},
+    0.95: {1: 6.314, 2: 2.920, 3: 2.353, 4: 2.132, 5: 2.015, 6: 1.943,
+           7: 1.895, 8: 1.860, 9: 1.833, 10: 1.812, 12: 1.782, 15: 1.753,
+           20: 1.725, 25: 1.708, 30: 1.697, 40: 1.684, 60: 1.671,
+           120: 1.658},
+    0.99: {1: 31.821, 2: 6.965, 3: 4.541, 4: 3.747, 5: 3.365, 6: 3.143,
+           7: 2.998, 8: 2.896, 9: 2.821, 10: 2.764, 12: 2.681, 15: 2.602,
+           20: 2.528, 25: 2.485, 30: 2.457, 40: 2.423, 60: 2.390,
+           120: 2.358},
+}
+_T_INF = {0.90: 1.282, 0.95: 1.645, 0.99: 2.326}
+
+
+def t_critical(df, confidence=0.95):
+    """One-sided critical t for `df` degrees of freedom.
+
+    Grows sharply as df shrinks: 6.31 at df=1, 2.02 at df=5, 1.70 at df=30
+    for 95%. That growth is the whole point — a small sample has to show far
+    more consistency to count as evidence.
+    """
+    if confidence not in _T_TABLE:
+        raise ValueError(f"confidence must be one of {sorted(_T_TABLE)}")
+    if df < 1:
+        return float("inf")
+    table = _T_TABLE[confidence]
+    if df in table:
+        return table[df]
+    keys = sorted(table)
+    if df > keys[-1]:
+        lo_df, lo_t = keys[-1], table[keys[-1]]
+        # Interpolate from the last row toward the normal limit in 1/df.
+        w = (1 / lo_df - 1 / df) / (1 / lo_df)
+        return lo_t + w * (_T_INF[confidence] - lo_t)
+    lo = max(k for k in keys if k < df)
+    hi = min(k for k in keys if k > df)
+    w = (1 / lo - 1 / df) / (1 / lo - 1 / hi)
+    return table[lo] + w * (table[hi] - table[lo])
+
+
+def trade_significance(trade_returns, confidence=0.95):
+    """Is the mean trade return distinguishable from zero?
+
+    A one-sided t-test on per-trade returns. This is what a minimum trade
+    count was crudely standing in for: whether the result could plausibly be
+    luck. Unlike a fixed count, the bar rises automatically as the sample
+    shrinks, so two trades can pass only with overwhelming consistency.
+
+    Returns t, the critical value, the sample size, and the verdict.
+    """
+    n = len(trade_returns)
+    out = {"n": n, "t": 0.0, "critical": float("inf"),
+           "mean": 0.0, "significant": False, "confidence": confidence}
+    if n < 2:
+        return out                      # a t-test needs at least two points
+    mean = sum(trade_returns) / n
+    sd = _stdev(trade_returns)
+    out["mean"] = mean
+    out["critical"] = t_critical(n - 1, confidence)
+    if sd == 0:
+        # Every trade identical. Consistent winners are significant, anything
+        # else is not — there is no variance to test against.
+        out["t"] = float("inf") if mean > 0 else 0.0
+    else:
+        out["t"] = mean / (sd / math.sqrt(n))
+    out["significant"] = mean > 0 and out["t"] >= out["critical"]
+    return out
 
 
 def buy_and_hold(bars, cash=1000.0):
@@ -182,9 +277,10 @@ def buy_and_hold(bars, cash=1000.0):
 
 
 def evaluate(bars, signal_fn, cash=1000.0, cost_model=None,
-             interval="day", benchmark_bars=None):
+             interval="day", benchmark_bars=None, confidence=0.95):
     """Full metric set for one strategy over one window."""
-    equity, trades = run(bars, signal_fn, cash, cost_model, interval)
+    equity, trades, rets = run(bars, signal_fn, cash, cost_model, interval,
+                               with_returns=True)
     bench = buy_and_hold(benchmark_bars or bars, cash)
 
     total = ((equity[-1] - cash) / cash * 100.0) if cash else 0.0
@@ -204,6 +300,13 @@ def evaluate(bars, signal_fn, cash=1000.0, cost_model=None,
         "equity": equity,
     }
     res.update(trade_stats(trades))
+    sig = trade_significance(rets, confidence)
+    res.update({
+        "trade_t": sig["t"],
+        "trade_t_critical": sig["critical"],
+        "trade_significant": sig["significant"],
+        "mean_trade_return_pct": sig["mean"] * 100.0,
+    })
     return res
 
 
@@ -248,10 +351,31 @@ def sensitivity(bars, make_signal_fn, param_values, cash=1000.0,
 
 # ── Verdict ────────────────────────────────────────────────────────────────
 
+def _fmt_t(t):
+    return "inf" if t == float("inf") else "%.2f" % t
+
+
 def grade(result, criteria=None):
-    """Apply the accept/reject gates. Returns (passed, [(name, ok, detail)])."""
+    """Apply the accept/reject gates. Returns (passed, [(name, ok, detail)]).
+
+    The significance check needs the trade-level fields `evaluate` produces.
+    A result built by hand without them falls back to a recomputation from
+    nothing, which fails — absent evidence is not evidence of an edge.
+    """
     c = dict(DEFAULT_CRITERIA)
     c.update(criteria or {})
+    conf = c.get("min_confidence", 0.95)
+
+    t = result.get("trade_t", 0.0)
+    crit = result.get("trade_t_critical", float("inf"))
+    # Recompute the critical value if the caller changed the confidence, so a
+    # custom confidence is honoured rather than silently using the default.
+    n = result.get("trades", 0)
+    if n >= 2:
+        crit = t_critical(n - 1, conf)
+    significant = bool(result.get("mean_trade_return_pct", 0) > 0
+                       and t >= crit)
+
     checks = [
         ("Sharpe >= %.2f" % c["min_sharpe"],
          result["sharpe"] >= c["min_sharpe"],
@@ -262,9 +386,12 @@ def grade(result, criteria=None):
         ("Profit factor >= %.2f" % c["min_profit_factor"],
          result["profit_factor"] >= c["min_profit_factor"],
          "%.2f" % result["profit_factor"]),
-        ("Trades >= %d (sample size)" % c["min_trades"],
+        ("Trades >= %d" % c["min_trades"],
          result["trades"] >= c["min_trades"],
          "%d" % result["trades"]),
+        ("Edge significant at %d%%" % round(conf * 100),
+         significant,
+         "t=%s, need %s over %d trades" % (_fmt_t(t), _fmt_t(crit), n)),
     ]
     if c["must_beat_benchmark"]:
         checks.append(("Beats benchmark after costs",

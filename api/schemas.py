@@ -29,6 +29,8 @@ class Criteria(BaseModel):
     min_trades: int | None = Field(None, ge=0, le=10_000)
     min_profit_factor: float | None = Field(None, ge=0, le=100)
     must_beat_benchmark: bool | None = None
+    min_confidence: Literal[0.90, 0.95, 0.99] | None = Field(
+        None, description="One-sided confidence that mean trade return > 0")
 
     def as_dict(self):
         return {k: v for k, v in self.model_dump().items() if v is not None}

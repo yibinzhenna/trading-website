@@ -193,9 +193,21 @@ async function drawChart(jobId) {
   });
 }
 
+/* Offer only symbols the server can actually serve, and open on one known to
+   produce a meaningful result. The form used to default to SPY, which the
+   bundled sample data does not contain, so a first click always errored. */
+async function loadSymbols() {
+  const { symbols, default: fallback } = await api("/symbols");
+  if (symbols && symbols.length) {
+    $("symbol-list").innerHTML = symbols
+      .map((s) => `<option value="${s}"></option>`).join("");
+  }
+  if (!$("symbol").value) $("symbol").value = fallback || "SPY";
+}
+
 $("form").addEventListener("submit", run);
 $("kind").addEventListener("change", renderParams);
-loadStrategies().catch((e) => {
+Promise.all([loadStrategies(), loadSymbols()]).catch((e) => {
   $("status").className = "status err";
   $("status").textContent = `Could not reach the API: ${e.message}`;
 });

@@ -69,6 +69,26 @@ def strategies():
     return schemas.strategy_catalog()
 
 
+@app.get("/symbols", tags=["meta"])
+def symbols(provider: str | None = Query(None)):
+    """What the active provider can serve.
+
+    `symbols` is null for providers that cannot enumerate — a remote vendor
+    covering thousands of tickers — meaning "try any", not "none available".
+    `default` is a symbol known to produce a meaningful result, so a first
+    visit does not open on an error.
+    """
+    try:
+        prov = deps.build_provider(provider)
+    except ProviderError as e:
+        raise HTTPException(400, f"Provider unavailable: {e}") from e
+    syms = prov.symbols()
+    default = None
+    if syms:
+        default = next((s for s in syms if s == "DEMO-REGIME"), syms[0])
+    return {"provider": prov.name, "symbols": syms, "default": default}
+
+
 @app.get("/providers", response_model=list[schemas.ProviderInfo], tags=["meta"])
 def providers():
     return deps.provider_status()
