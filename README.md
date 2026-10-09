@@ -16,7 +16,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
-No dependencies beyond the standard library. `pytest` is the only dev extra.
+The engine itself has no dependencies beyond the standard library; the web
+layer adds FastAPI, uvicorn and pydantic.
 
 ## Use
 
@@ -180,12 +181,50 @@ normal vision and 24.7 worst-case colour-vision deficiency, both modes
 checked against their own surface. Light and dark are separate selections
 rather than an automatic flip.
 
+## Deploying
+
+This app needs a **persistent process**. It will not work on serverless
+platforms as built, and that is not a configuration gap:
+
+- Jobs live in a thread pool and an in-memory dict. On serverless, `POST`
+  returns a job id from one instance and `GET` asks a different one, so the
+  poll 404s forever — and the function is frozen when it responds, so the
+  backtest never finishes anyway.
+- The bar cache writes to disk. Serverless filesystems are read-only outside
+  `/tmp`, which does not persist between invocations.
+
+Render, Railway and Fly all run a real process and work unchanged. A
+`Procfile`, `requirements.txt` and `render.yaml` are included.
+
+```bash
+# whatever the host runs reduces to this
+uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1
+```
+
+**One worker.** Jobs are in process memory, so a second worker would 404 a job
+running perfectly well in its sibling. When that limit starts to bite, the fix
+is swapping `JobStore` for a real queue — one class, same four methods — not
+adding workers.
+
+On a host with an ephemeral filesystem, point `QUANTLAB_CACHE_ROOT` at `/tmp`
+or accept that each run refetches.
+
+### Sample data
+
+`sampledata/` holds synthetic bars in three regimes, so a fresh clone or
+deploy works with no API key and no provider account.
+
+Synthetic is deliberate. Real market data carries redistribution restrictions
+that would make committing it to a public repository a licensing problem;
+generated data carries none. It is also not real prices — do not read anything
+into a backtest against it.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `QUANTLAB_PROVIDER` | `local` | Default data provider |
-| `QUANTLAB_DATA_ROOT` | `data` | Where `local` reads files |
+| `QUANTLAB_DATA_ROOT` | `sampledata` | Where `local` reads files |
 | `QUANTLAB_CACHE_ROOT` | `cache` | Cached bars |
 | `QUANTLAB_CACHE_TTL` | `43200` | Cache lifetime, seconds |
 | `QUANTLAB_WORKERS` | `2` | Concurrent backtest jobs |

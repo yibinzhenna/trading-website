@@ -1,0 +1,5 @@
+# Runtime dependencies. Hosts that build from requirements.txt read this;
+# pyproject.toml carries the same list for `pip install .`
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7

@@ -16,7 +16,11 @@ from quantlab.providers import ProviderError, get_provider
 class Settings:
     def __init__(self):
         self.provider = os.getenv("QUANTLAB_PROVIDER", "local")
-        self.data_root = os.getenv("QUANTLAB_DATA_ROOT", "data")
+        # sampledata/ is committed, so a fresh clone or deploy works with
+        # no key and no provider account. Point this at your own data.
+        self.data_root = os.getenv("QUANTLAB_DATA_ROOT", "sampledata")
+        # Hosts with an ephemeral or read-only filesystem should point this
+        # somewhere writable, or accept that every run refetches.
         self.cache_root = os.getenv("QUANTLAB_CACHE_ROOT", "cache")
         self.cache_ttl = int(os.getenv("QUANTLAB_CACHE_TTL", 60 * 60 * 12))
         self.workers = int(os.getenv("QUANTLAB_WORKERS", 2))

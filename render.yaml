@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: quantlab
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # One worker, deliberately. Jobs live in process memory, so a second
+    # worker would 404 a job that is running perfectly well in its sibling.
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: QUANTLAB_DATA_ROOT
+        value: sampledata
+      # Free tiers have an ephemeral filesystem; /tmp is the writable spot.
+      - key: QUANTLAB_CACHE_ROOT
+        value: /tmp/quantlab-cache

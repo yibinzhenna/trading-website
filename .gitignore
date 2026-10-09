@@ -8,6 +8,7 @@ data/
 cache/
 *.jsonl
 !tests/fixtures/*.jsonl
+!sampledata/*.jsonl
 
 # ── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
