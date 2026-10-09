@@ -45,13 +45,64 @@ app = FastAPI(
     summary="Strategy backtesting with overfit detection",
 )
 
-# Wide open for local development. Phase 4 narrows this to the real origin.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
+if deps.settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=deps.settings.cors_origins,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+def _csp():
+    """Content-Security-Policy for every response.
+
+    The session token lives in localStorage, where any script on the page
+    can read it, so the real defence for accounts is controlling which
+    scripts run at all: this origin, plus pinned and hashed files from one
+    CDN. No inline script, no inline style, no eval. Network calls may go
+    only here and to the Supabase project. No site may frame the page, which
+    rules out clickjacking the sign-in dialog.
+    """
+    connect = ["'self'"]
+    if deps.settings.supabase_url:
+        connect.append(deps.settings.supabase_url)
+    return "; ".join([
+        "default-src 'self'",
+        "script-src 'self' https://cdn.jsdelivr.net",
+        "style-src 'self'",
+        "img-src 'self' data:",
+        "connect-src " + " ".join(connect),
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ])
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    h = response.headers
+    # FastAPI's interactive docs run an inline script and need their own
+    # policy; they render only the schema this app generates.
+    if not request.url.path.startswith(("/docs", "/redoc")):
+        h.setdefault("Content-Security-Policy", _csp())
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    # Run links carry the run id in the query string; never send it on.
+    h.setdefault("Referrer-Policy", "no-referrer")
+    h.setdefault("Permissions-Policy",
+                 "camera=(), microphone=(), geolocation=(), payment=()")
+    if request.url.scheme == "https" or \
+            request.headers.get("x-forwarded-proto") == "https":
+        h.setdefault("Strict-Transport-Security",
+                     "max-age=31536000; includeSubDomains")
+    # Per-user responses (run lists, account details) must not be stored by
+    # a shared cache or left on a shared computer's disk.
+    if request.url.path.startswith(("/me", "/runs")):
+        h.setdefault("Cache-Control", "no-store")
+    return response
 
 
 # ── Metadata ───────────────────────────────────────────────────────────────

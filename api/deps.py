@@ -56,6 +56,13 @@ class Settings:
         self.supabase_jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
         # Signed-in users get their own, larger allowance.
         self.user_rate_limit = int(os.getenv("QUANTLAB_USER_RATE_LIMIT", 60))
+        # Other origins allowed to call the API from a browser, comma
+        # separated. Empty (default): none. The UI is same-origin and needs
+        # no CORS; opening it up lets any page run backtests from its
+        # visitors' browsers, spreading load across their IP limits.
+        self.cors_origins = [o.strip() for o in
+                             os.getenv("QUANTLAB_CORS_ORIGINS", "").split(",")
+                             if o.strip()]
 
 
 settings = Settings()

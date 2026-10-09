@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>quantlab — strategy backtesting</title>
 <link rel="stylesheet" href="/static/app.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- integrity: the browser refuses the file if the CDN ever serves
+     different bytes, so a compromised CDN cannot run code on this page. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+        integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+        crossorigin="anonymous"></script>
 </head>
 <body>
 <div class="wrap">
@@ -85,8 +89,8 @@
     <div class="card">
       <h2>Equity curve</h2>
       <div class="legend">
-        <span><i style="background:var(--series-strategy)"></i><span id="lg-strategy">Strategy</span></span>
-        <span><i style="background:var(--series-benchmark)"></i>Buy &amp; hold</span>
+        <span><i class="swatch-strategy"></i><span id="lg-strategy">Strategy</span></span>
+        <span><i class="swatch-benchmark"></i>Buy &amp; hold</span>
       </div>
       <div class="chartbox"><canvas id="chart"></canvas></div>
       <p class="hint">Starting cash grown by each approach over the same window,

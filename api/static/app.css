@@ -161,6 +161,9 @@ button.ghost {
           color: var(--text-secondary); }
 .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
             margin-right: 0.4rem; vertical-align: -1px; }
+/* Classes, not style attributes: the CSP forbids inline styles. */
+.swatch-strategy { background: var(--series-strategy); }
+.swatch-benchmark { background: var(--series-benchmark); }
 
 /* ── Tables ───────────────────────────────────────────────────────────── */
 

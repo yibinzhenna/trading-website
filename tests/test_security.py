@@ -15,7 +15,8 @@ def make_client(tmp_path, **overrides):
     settings = dict(provider="local", data_root="tests/fixtures",
                     cache_root=str(tmp_path / "cache"), admin_token="s3cret",
                     rate_limit=10_000, rate_window=60, max_inflight=1_000,
-                    trust_proxy_hops=0, client_ip_header="")
+                    trust_proxy_hops=0, client_ip_header="",
+                    supabase_url="", supabase_publishable_key="")
     settings.update(overrides)
     deps.reset_for_tests(**settings)
     from api.main import app
@@ -194,3 +195,83 @@ def test_limit_holds_end_to_end_via_edge_header(tmp_path):
                         headers=dict(h, **{"X-Forwarded-For": f"{i}.{i}.{i}.{i}"})
                         ).status_code for i in range(1, 4)]
         assert codes == [202, 202, 429]
+
+
+# ── Browser hardening ──────────────────────────────────────────────────────
+# Sessions live in localStorage, readable by any script on the page, so
+# controlling which scripts can run is what protects accounts.
+
+def test_security_headers_on_every_page(tmp_path):
+    with make_client(tmp_path) as c:
+        for path in ("/", "/health", "/static/app.js"):
+            h = c.get(path).headers
+            assert "frame-ancestors 'none'" in h["content-security-policy"], path
+            assert h["x-content-type-options"] == "nosniff"
+            assert h["x-frame-options"] == "DENY"
+            assert h["referrer-policy"] == "no-referrer"
+
+
+def test_csp_allows_no_inline_code_or_eval(tmp_path):
+    with make_client(tmp_path) as c:
+        csp = c.get("/").headers["content-security-policy"]
+    assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+    assert "script-src 'self' https://cdn.jsdelivr.net" in csp
+
+
+def test_csp_lets_the_page_reach_supabase_only_when_configured(tmp_path):
+    with make_client(tmp_path) as c:
+        assert "connect-src 'self';" in c.get("/").headers["content-security-policy"]
+        deps.settings.supabase_url = "https://proj.supabase.co"
+        csp = c.get("/").headers["content-security-policy"]
+    assert "connect-src 'self' https://proj.supabase.co;" in csp
+
+
+def test_page_has_no_inline_code_and_pins_external_scripts(tmp_path):
+    """The CSP would block inline code anyway; this catches it before a
+    deploy does. Every CDN script must carry an integrity hash."""
+    import re
+    from pathlib import Path
+    html = Path("api/templates/index.html").read_text(encoding="utf-8")
+    assert "style=" not in html and "<style" not in html
+    assert not re.search(r"\son[a-z]+=", html)
+    for tag in re.findall(r"<script[^>]*>", html):
+        assert "src=" in tag, f"inline script: {tag}"
+        if "https://" in tag:
+            assert 'integrity="sha384-' in tag and "crossorigin" in tag, tag
+    js = Path("api/static/account.js").read_text(encoding="utf-8")
+    assert "s.integrity = SDK_INTEGRITY" in js
+
+
+def test_hsts_only_over_https(tmp_path):
+    with make_client(tmp_path) as c:
+        assert "strict-transport-security" not in c.get("/").headers
+        h = c.get("/", headers={"X-Forwarded-Proto": "https"}).headers
+    assert h["strict-transport-security"].startswith("max-age=31536000")
+
+
+def test_account_responses_are_not_cached(tmp_path):
+    with make_client(tmp_path) as c:
+        assert c.get("/me").headers["cache-control"] == "no-store"
+        assert "cache-control" not in c.get("/strategies").headers
+
+
+def test_other_sites_cannot_call_the_api_from_a_browser(tmp_path):
+    """No CORS by default: a foreign page cannot use its visitors' browsers
+    to run backtests or read responses."""
+    with make_client(tmp_path) as c:
+        r = c.options("/backtest", headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type"})
+        get = c.get("/health", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in r.headers
+    assert "access-control-allow-origin" not in get.headers
+
+
+def test_job_ids_are_64_random_bits():
+    from quantlab.jobs import Job
+    ids = {Job("t").id for _ in range(2000)}
+    assert len(ids) == 2000
+    assert all(len(i) == 16 and int(i, 16) >= 0 for i in ids)
+    # A truncated uuid4 always had '4' at position 12.
+    assert len({i[12] for i in ids}) > 1

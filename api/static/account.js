@@ -8,6 +8,10 @@
 const Account = (() => {
   const SDK =
     "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.0/dist/umd/supabase.min.js";
+  // This library holds the session, so it is the last file that should be
+  // swappable: the browser rejects it unless the bytes match this hash.
+  const SDK_INTEGRITY =
+    "sha384-De+l/Df7qym5QBDVocD3+gW1S7IjR3epf+6KbRDjB3FCCzM/LqVTwqckT6FhFar8";
   const el = (id) => document.getElementById(id);
   const listeners = [];
   let sb = null;
@@ -29,6 +33,8 @@ const Account = (() => {
     return new Promise((resolve, reject) => {
       const s = document.createElement("script");
       s.src = src;
+      s.integrity = SDK_INTEGRITY;
+      s.crossOrigin = "anonymous";
       s.onload = resolve;
       s.onerror = () => reject(new Error("could not load the sign-in library"));
       document.head.appendChild(s);

@@ -16,10 +16,10 @@ frontend never notice.
 """
 
 import logging
+import secrets
 import threading
 import time
 import traceback
-import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -42,7 +42,9 @@ class Job:
                  "started_at", "finished_at", "meta")
 
     def __init__(self, kind, meta=None):
-        self.id = uuid.uuid4().hex[:16]
+        # 64 random bits. The id is the only key to a result, so it must be
+        # unguessable; a truncated uuid4 spends 4 of these on its version.
+        self.id = secrets.token_hex(8)
         self.kind = kind
         self.status = QUEUED
         self.result = None
