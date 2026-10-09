@@ -10,6 +10,10 @@ cache/
 !tests/fixtures/*.jsonl
 !sampledata/*.jsonl
 
+# ── Local run database (DATABASE_URL defaults to SQLite here) ──────────────
+*.db
+*.db-journal
+
 # ── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

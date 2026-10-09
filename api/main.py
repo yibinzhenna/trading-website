@@ -1,16 +1,18 @@
 """
 quantlab HTTP API.
 
-No auth and no database — both are Phase 4. This layer exists to prove the
-shape: submit a backtest, poll for it, get a graded result.
+Submit a backtest, poll for it, get a graded result. Finished runs are
+written to a database (`api.store`), so a result link keeps working after
+the process that computed it is gone. No accounts yet.
 
 Run it with::
 
     uvicorn api.main:app --reload --workers 1
 
-One worker, deliberately. Jobs live in process memory, so a second worker
-would accept a submission on one process and be asked for it on another,
-returning 404 for a job that is running perfectly well next door.
+One worker, deliberately. Jobs *in flight* live in process memory, so a
+second worker would accept a submission on one process and be asked for it
+on another, returning 404 for a job that is running perfectly well next door.
+Finished runs are in the database and readable from anywhere.
 """
 
 from contextlib import asynccontextmanager
@@ -32,6 +34,7 @@ from quantlab.strategies import StrategyError, compile_strategy
 async def lifespan(_app):
     yield
     deps.jobs.shutdown(wait=False)
+    deps.runs.close()
 
 
 app = FastAPI(
@@ -60,6 +63,7 @@ def health():
         provider=deps.settings.provider,
         cache_entries=deps.cache.stats()["entries"],
         jobs_in_flight=in_flight,
+        database=deps.runs.dialect,
     )
 
 
@@ -169,24 +173,41 @@ def submit_backtest(req: schemas.BacktestRequest):
     except ProviderError as e:
         raise HTTPException(400, f"Provider unavailable: {e}") from e
 
+    # The request rides along in meta so a saved run can repopulate the form
+    # it came from — that is what makes a shared link reproducible.
     job = deps.jobs.submit(
         "backtest", _run_backtest, req,
         meta={"symbol": req.symbol, "kind": req.kind,
-              "interval": req.interval})
+              "interval": req.interval,
+              "request": req.model_dump(mode="json")})
     return schemas.JobRef(**job.to_dict(include_result=False))
+
+
+def _public(payload):
+    """Strip what a public reader should not get: the equity curves (served
+    separately) and server tracebacks (paths and source lines, for the log)."""
+    payload = dict(payload)
+    payload["meta"] = {k: v for k, v in payload.get("meta", {}).items()
+                       if k != "traceback"}
+    if isinstance(payload.get("result"), dict):
+        payload["result"] = {k: v for k, v in payload["result"].items()
+                             if k != "_series"}
+    return payload
 
 
 @app.get("/backtest/{job_id}", response_model=schemas.JobStatus,
          tags=["backtest"])
 def get_backtest(job_id: str):
+    """Memory first — it is the only place a job in flight exists — then the
+    database, for anything finished before the last restart or evicted from
+    the in-memory history."""
     job = deps.jobs.get(job_id)
-    if job is None:
+    if job is not None:
+        return schemas.JobStatus(**_public(job.to_dict()))
+    saved = deps.runs.get(job_id)
+    if saved is None:
         raise HTTPException(404, f"No such job: {job_id}")
-    payload = job.to_dict()
-    if isinstance(payload.get("result"), dict):
-        payload["result"] = {k: v for k, v in payload["result"].items()
-                             if k != "_series"}
-    return schemas.JobStatus(**payload)
+    return schemas.JobStatus(**_public(saved))
 
 
 @app.get("/backtest/{job_id}/equity", tags=["backtest"])
@@ -196,11 +217,14 @@ def get_equity(job_id: str):
     Served separately because it dwarfs the summary and only one view needs it.
     """
     job = deps.jobs.get(job_id)
-    if job is None:
-        raise HTTPException(404, f"No such job: {job_id}")
-    if job.status != "done":
-        raise HTTPException(409, f"Job is {job.status}, not done")
-    series = (job.result or {}).get("_series")
+    if job is not None:
+        if job.status != "done":
+            raise HTTPException(409, f"Job is {job.status}, not done")
+        series = (job.result or {}).get("_series")
+    else:
+        series = deps.runs.series(job_id)
+        if series is None and deps.runs.get(job_id) is None:
+            raise HTTPException(404, f"No such job: {job_id}")
     if not series:
         raise HTTPException(404, "No series recorded for this job")
     return series

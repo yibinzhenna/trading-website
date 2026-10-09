@@ -8,6 +8,7 @@ preventing the server from starting.
 
 import os
 
+from api.store import RunStore
 from quantlab.cache import BarCache, CachedProvider
 from quantlab.jobs import JobStore
 from quantlab.providers import ProviderError, get_provider
@@ -39,11 +40,29 @@ class Settings:
         # Reverse proxies whose X-Forwarded-For entries can be trusted.
         # 0 = use the socket address (local development).
         self.trust_proxy_hops = int(os.getenv("QUANTLAB_TRUST_PROXY_HOPS", 0))
+        # Where finished runs are kept. SQLite for development; set a
+        # Postgres URL in production. Hosts with an ephemeral disk lose a
+        # SQLite file on every restart, which is the problem this solves.
+        self.database_url = os.getenv("DATABASE_URL", "sqlite:///quantlab.db")
+        # Runs older than this are deleted. 0 keeps them forever.
+        self.run_retention_days = int(os.getenv("QUANTLAB_RUN_RETENTION_DAYS", 30))
 
 
 settings = Settings()
 cache = BarCache(settings.cache_root, settings.cache_ttl)
-jobs = JobStore(workers=settings.workers)
+
+
+def _persist(job):
+    if job.kind == "backtest":
+        runs.save(job)
+
+
+def _make_runs():
+    return RunStore(settings.database_url, settings.run_retention_days)
+
+
+runs = _make_runs()
+jobs = JobStore(workers=settings.workers, on_finish=_persist)
 
 
 def _make_limiter():
@@ -89,11 +108,13 @@ def reset_for_tests(**overrides):
     so a second test module sharing the singleton would hit "cannot schedule
     new futures after shutdown" the moment it submitted anything.
     """
-    global cache, jobs, limiter
+    global cache, jobs, limiter, runs
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
-    jobs = JobStore(workers=settings.workers)
+    runs.close()
+    runs = _make_runs()
+    jobs = JobStore(workers=settings.workers, on_finish=_persist)
     limiter = _make_limiter()
     _providers.clear()
     return cache

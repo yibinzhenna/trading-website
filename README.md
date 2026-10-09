@@ -151,6 +151,26 @@ cannot tell the difference.
 A stale entry is served when the provider fails. Yesterday's bars beat an
 error page.
 
+### Saved runs and result links
+
+Every finished backtest — passed, failed or errored — is written to a
+database (`api/store.py`). `GET /backtest/{id}` and `/equity` read memory
+first, where a job in flight is the only copy, then the database. A result
+therefore survives restarts, redeploys and the in-memory history cap.
+
+The web UI puts the run id in the address bar (`/?run=<id>`) and has a
+**Copy link** button. Opening a link restores the form exactly as it was
+submitted, so a shared result is reproducible, not just viewable. The id is
+64 random bits and nothing lists runs publicly: the link is the only way in.
+
+`DATABASE_URL` picks the database. Unset means SQLite in `quantlab.db`, which
+is right for development and wrong for an ephemeral-disk host, where it is
+wiped on every restart. Any `postgres://` URL works (Neon, Supabase, Render
+Postgres). Runs older than `QUANTLAB_RUN_RETENTION_DAYS` are pruned.
+
+Saving is best effort. If the database is down the job still completes and
+its result is still served from memory; the failure is logged.
+
 ## Web UI
 
 ```bash
@@ -208,7 +228,10 @@ is swapping `JobStore` for a real queue — one class, same four methods — not
 adding workers.
 
 On a host with an ephemeral filesystem, point `QUANTLAB_CACHE_ROOT` at `/tmp`
-or accept that each run refetches.
+or accept that each run refetches, and set `DATABASE_URL` to a Postgres
+instance or saved runs vanish on each deploy. Render's free Postgres expires
+after 30 days; Neon's free tier does not. On Render, set it under the
+service's Environment tab — `render.yaml` declares it without a value.
 
 ### Sample data
 
@@ -266,12 +289,18 @@ proxies, or leave both unset to use the socket address.
 | `QUANTLAB_MAX_INFLIGHT` | `8` | Queued + running jobs, all clients |
 | `QUANTLAB_CLIENT_IP_HEADER` | *(unset)* | Edge-set client IP header, e.g. `cf-connecting-ip` |
 | `QUANTLAB_TRUST_PROXY_HOPS` | `0` | Trusted appending proxies; 0 uses the socket address |
+| `DATABASE_URL` | `sqlite:///quantlab.db` | Where finished runs are kept; Postgres in production |
+| `QUANTLAB_RUN_RETENTION_DAYS` | `30` | Delete older runs; 0 keeps them forever |
 
 ## Known issues
 
 *Resolved:* the fixed `min_trades: 30` gate rejected every daily-bar strategy,
 since they make 2–14 trades a year. It is replaced by a one-sided t-test on
 per-trade returns, whose bar rises automatically as the sample shrinks.
+
+*Resolved:* a position still open at the last bar appended its close-out as
+an extra equity point, so the strategy curve was one point longer than the
+dates and the benchmark. The close-out now replaces the last bar's mark.
 
 ## Licensing note
 
@@ -298,6 +327,7 @@ api/
   main.py              FastAPI routes
   schemas.py           request/response models and validation
   deps.py              settings, provider wiring, singletons
+  store.py             saved runs (SQLite / Postgres)
   static/, templates/  web UI — no build step
 tests/                 114 tests, hermetic, no network
 ```

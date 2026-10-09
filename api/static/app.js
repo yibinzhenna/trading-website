@@ -80,11 +80,7 @@ async function run(event) {
     const done = await poll(job.job_id);
     if (done.status === "failed") throw new Error(done.error);
     $("status").textContent = `Done in ${done.duration_sec}s.`;
-    render(done.result);
-    // Reveal before charting: Chart.js measures its container, and a hidden
-    // element is 0x0, which it sizes the canvas to and never recovers from.
-    $("results").hidden = false;
-    await drawChart(job.job_id);
+    await show(done);
   } catch (err) {
     $("status").className = "status err";
     $("status").textContent = err.message;
@@ -104,6 +100,63 @@ async function poll(jobId, timeoutMs = 120000) {
     wait = Math.min(wait * 1.4, 1500);   // back off; most finish fast
   }
   throw new Error("Timed out waiting for the backtest.");
+}
+
+/* ── Shareable results ─────────────────────────────────────────────────────
+   Finished runs are kept server-side, so a run id in the URL is enough to
+   bring a result back: after a restart, on another device, for someone else.
+   The id is 64 random bits; the link is the only way to find a run. */
+
+async function show(job) {
+  render(job.result);
+  // Reveal before charting: Chart.js measures its container, and a hidden
+  // element is 0x0, which it sizes the canvas to and never recovers from.
+  $("results").hidden = false;
+  await drawChart(job.job_id);
+  history.replaceState(null, "", `?run=${encodeURIComponent(job.job_id)}`);
+}
+
+/* Put the form back the way the run was submitted, so a shared link is
+   reproducible — change one number and run again. */
+function fillForm(req) {
+  if (!req) return;
+  if (req.symbol) $("symbol").value = req.symbol;
+  if (req.kind && CATALOG[req.kind]) { $("kind").value = req.kind; renderParams(); }
+  if (req.cash) $("cash").value = req.cash;
+  if (req.cost_model) $("slippage").value = req.cost_model.slippage_bps;
+  for (const [k, v] of Object.entries(req.params || {})) {
+    const el = document.querySelector(`#params input[data-param="${k}"]`);
+    if (el) el.value = v;
+  }
+}
+
+async function openSharedRun() {
+  const id = new URLSearchParams(location.search).get("run");
+  if (!id) return;
+  $("status").textContent = "Loading saved result…";
+  try {
+    const job = await api(`/backtest/${encodeURIComponent(id)}`);
+    fillForm(job.meta && job.meta.request);
+    if (job.status === "failed") throw new Error(job.error);
+    const done = job.status === "done" ? job : await poll(id);
+    if (done.status === "failed") throw new Error(done.error);
+    $("status").textContent = "";
+    await show(done);
+  } catch (err) {
+    $("status").className = "status err";
+    $("status").textContent = `Could not load that result: ${err.message}`;
+  }
+}
+
+async function copyLink() {
+  const btn = $("share");
+  try {
+    await navigator.clipboard.writeText(location.href);
+    btn.textContent = "Copied";
+  } catch {
+    btn.textContent = "Copy from the address bar";
+  }
+  setTimeout(() => { btn.textContent = "Copy link"; }, 1800);
 }
 
 /* ── Render ────────────────────────────────────────────────────────────── */
@@ -207,7 +260,8 @@ async function loadSymbols() {
 
 $("form").addEventListener("submit", run);
 $("kind").addEventListener("change", renderParams);
-Promise.all([loadStrategies(), loadSymbols()]).catch((e) => {
+$("share").addEventListener("click", copyLink);
+Promise.all([loadStrategies(), loadSymbols()]).then(openSharedRun, (e) => {
   $("status").className = "status err";
   $("status").textContent = `Could not reach the API: ${e.message}`;
 });

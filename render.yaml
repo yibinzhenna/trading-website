@@ -35,3 +35,10 @@ services:
         value: "60"
       - key: QUANTLAB_MAX_INFLIGHT
         value: "8"
+      # Postgres for finished runs. Unset falls back to SQLite on the
+      # ephemeral disk, which forgets everything on each restart or deploy.
+      # sync: false — Render asks for the value; it is never in this file.
+      - key: DATABASE_URL
+        sync: false
+      - key: QUANTLAB_RUN_RETENTION_DAYS
+        value: "30"

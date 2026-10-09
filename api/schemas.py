@@ -110,6 +110,7 @@ class Health(BaseModel):
     provider: str
     cache_entries: int
     jobs_in_flight: int
+    database: str = Field(description="Dialect where runs are kept")
 
 
 def strategy_catalog():

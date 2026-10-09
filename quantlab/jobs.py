@@ -15,6 +15,7 @@ class with the same four methods and changing the wiring — the API and the
 frontend never notice.
 """
 
+import logging
 import threading
 import time
 import traceback
@@ -22,6 +23,8 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+
+log = logging.getLogger("quantlab.jobs")
 
 QUEUED = "queued"
 RUNNING = "running"
@@ -80,12 +83,16 @@ class JobStore:
     fuse.
     """
 
-    def __init__(self, workers=2, max_jobs=500):
+    def __init__(self, workers=2, max_jobs=500, on_finish=None):
         self._jobs = OrderedDict()
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=workers,
                                         thread_name_prefix="job")
         self.max_jobs = max_jobs
+        # Called with each job once it is terminal, on the worker thread.
+        # Persistence hooks in here; its failures are logged, never raised,
+        # because a result that could not be saved is still a result.
+        self.on_finish = on_finish
 
     def submit(self, kind, fn, *args, meta=None, **kwargs):
         job = Job(kind, meta)
@@ -117,6 +124,11 @@ class JobStore:
         # `status` is written last on both paths, deliberately. Pollers key
         # off it, so flipping it before result/error are populated lets a
         # client observe a terminal job with missing fields.
+        if self.on_finish is not None:
+            try:
+                self.on_finish(job)
+            except Exception:
+                log.exception("on_finish failed for job %s", job.id)
 
     def get(self, job_id):
         with self._lock:
