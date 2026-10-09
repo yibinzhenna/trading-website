@@ -127,6 +127,12 @@ class JobStore:
             jobs = list(self._jobs.values())
         return [j.to_dict(include_result=False) for j in reversed(jobs)][:limit]
 
+    def in_flight(self):
+        """Jobs queued or running, across the whole store."""
+        with self._lock:
+            return sum(1 for j in self._jobs.values()
+                       if j.status not in TERMINAL)
+
     def wait(self, job_id, timeout=30, poll=0.05):
         """Block until terminal. For tests and synchronous callers only —
         the HTTP layer polls instead."""

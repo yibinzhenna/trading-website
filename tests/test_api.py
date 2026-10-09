@@ -9,6 +9,8 @@ runs.
 import pytest
 from fastapi.testclient import TestClient
 
+ADMIN = {"Authorization": "Bearer test-admin"}
+
 
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
@@ -17,6 +19,7 @@ def client(tmp_path_factory):
         provider="local",
         data_root="tests/fixtures",
         cache_root=str(tmp_path_factory.mktemp("cache")),
+        admin_token="test-admin", rate_limit=10_000, max_inflight=1_000,
     )
     from api.main import app
     with TestClient(app) as c:
@@ -112,7 +115,7 @@ def test_unknown_job_is_404(client):
 
 def test_jobs_listing(client):
     run_to_completion(client, {"symbol": "SPY", "kind": "breakout"})
-    jobs = client.get("/jobs").json()
+    jobs = client.get("/jobs", headers=ADMIN).json()
     assert jobs and jobs[0]["kind"] == "backtest"
 
 
@@ -174,9 +177,9 @@ def test_unknown_symbol_fails_cleanly(client):
 
 def test_cache_populated_after_a_run(client):
     run_to_completion(client, {"symbol": "SPY", "kind": "momentum"})
-    assert client.get("/cache").json()["entries"] >= 1
+    assert client.get("/cache", headers=ADMIN).json()["entries"] >= 1
 
 
 def test_cache_can_be_cleared(client):
     run_to_completion(client, {"symbol": "SPY", "kind": "momentum"})
-    assert client.request("DELETE", "/cache").json()["removed"] >= 1
+    assert client.request("DELETE", "/cache", headers=ADMIN).json()["removed"] >= 1

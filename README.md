@@ -111,8 +111,9 @@ Interactive docs at `/docs`.
 | `POST /backtest` | Queue a backtest, returns `202` and a job id |
 | `GET /backtest/{id}` | Poll for status and result |
 | `GET /backtest/{id}/equity` | Equity + benchmark series, for charting |
-| `GET /jobs` | Recent jobs |
-| `GET`/`DELETE /cache` | Inspect or clear cached bars |
+| `GET /symbols` | Symbols the active provider can serve, plus a sensible default |
+| `GET /jobs` | Recent jobs — **admin** |
+| `GET`/`DELETE /cache` | Inspect or clear cached bars — **admin** |
 
 Backtests run as background jobs because they are CPU-bound — a walk-forward
 plus a sweep takes seconds to minutes, which is far too long for a request
@@ -219,6 +220,29 @@ that would make committing it to a public repository a licensing problem;
 generated data carries none. It is also not real prices — do not read anything
 into a backtest against it.
 
+## Access and limits
+
+**Admin endpoints** — `GET /jobs`, `GET /cache`, `DELETE /cache` — require
+`Authorization: Bearer $QUANTLAB_ADMIN_TOKEN`. They reveal what other people
+queried and can wipe state. With no token configured they are **disabled**,
+so a fresh deploy is closed by default. `render.yaml` has Render generate the
+token; read it from the dashboard.
+
+Individual jobs stay readable by id without a token. Ids are 64 random bits,
+so holding one means you submitted it or were given it.
+
+**Submissions are throttled two ways:**
+
+- A **global cap** on jobs queued or running (default 8). This is what
+  protects the instance, and it holds no matter who is asking.
+- A **per-client rate** (default 20 per 60s), returning `429` with
+  `Retry-After`. This is fairness, not protection: a determined client can
+  rotate addresses.
+
+Behind a proxy, the client is read from `X-Forwarded-For` — from the
+**right**, `QUANTLAB_TRUST_PROXY_HOPS` entries in. The left-most entry is
+client-written, so trusting it would let anyone pick their own bucket.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -230,15 +254,17 @@ into a backtest against it.
 | `QUANTLAB_WORKERS` | `2` | Concurrent backtest jobs |
 | `QUANTLAB_MIN_BARS` | `60` | Refuse to backtest less than this |
 | `QUANTLAB_MAX_BARS` | `5000` | Cap bars per run |
+| `QUANTLAB_ADMIN_TOKEN` | *(unset)* | Enables admin endpoints; unset disables them |
+| `QUANTLAB_RATE_LIMIT` | `20` | Submissions per client per window |
+| `QUANTLAB_RATE_WINDOW` | `60` | Window, seconds |
+| `QUANTLAB_MAX_INFLIGHT` | `8` | Queued + running jobs, all clients |
+| `QUANTLAB_TRUST_PROXY_HOPS` | `0` | Trusted proxies; 0 uses the socket address |
 
 ## Known issues
 
-**The `min_trades: 30` gate is miscalibrated for daily bars.** Strategies of
-this kind generate roughly 2–14 trades across a year of daily data, so the
-default criteria reject everything regardless of quality. The gate exists for
-a good reason — a Sharpe over five trades is noise — but the threshold needs
-to be set against the actual bar count and holding period. Pass your own
-`criteria` to `backtest()` until this is resolved.
+*Resolved:* the fixed `min_trades: 30` gate rejected every daily-bar strategy,
+since they make 2–14 trades a year. It is replaced by a one-sided t-test on
+per-trade returns, whose bar rises automatically as the sample shrinks.
 
 ## Licensing note
 

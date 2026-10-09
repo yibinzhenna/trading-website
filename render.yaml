@@ -16,3 +16,18 @@ services:
       # Free tiers have an ephemeral filesystem; /tmp is the writable spot.
       - key: QUANTLAB_CACHE_ROOT
         value: /tmp/quantlab-cache
+      # Admin endpoints (/cache, /jobs). Render generates a random 256-bit
+      # value; read it from the dashboard. Never commit it here.
+      - key: QUANTLAB_ADMIN_TOKEN
+        generateValue: true
+      # Render's load balancer appends the client address to
+      # X-Forwarded-For. If more proxies sit in front, this resolves to a
+      # proxy address shared by many clients — stricter, never looser.
+      - key: QUANTLAB_TRUST_PROXY_HOPS
+        value: "1"
+      - key: QUANTLAB_RATE_LIMIT
+        value: "20"
+      - key: QUANTLAB_RATE_WINDOW
+        value: "60"
+      - key: QUANTLAB_MAX_INFLIGHT
+        value: "8"

@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 def client(tmp_path_factory):
     from api import deps
     deps.reset_for_tests(provider="local", data_root="tests/fixtures",
-                         cache_root=str(tmp_path_factory.mktemp("cache")))
+                         cache_root=str(tmp_path_factory.mktemp("cache")),
+        admin_token="test-admin", rate_limit=10_000, max_inflight=1_000)
     from api.main import app
     with TestClient(app) as c:
         yield c

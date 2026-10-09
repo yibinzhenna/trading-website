@@ -17,12 +17,13 @@ from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
+from api.security import enforce_submission_limits, require_admin
 from quantlab import StrategySpec, __version__, backtest, engine
 from quantlab.providers import ProviderError
 from quantlab.strategies import StrategyError, compile_strategy
@@ -53,8 +54,7 @@ app.add_middleware(
 
 @app.get("/health", response_model=schemas.Health, tags=["meta"])
 def health():
-    in_flight = sum(1 for j in deps.jobs.list(limit=200)
-                    if j["status"] in ("queued", "running"))
+    in_flight = deps.jobs.in_flight()
     return schemas.Health(
         version=__version__,
         provider=deps.settings.provider,
@@ -94,12 +94,15 @@ def providers():
     return deps.provider_status()
 
 
-@app.get("/cache", tags=["meta"])
+# Operator tools. They reveal what other people queried and can wipe state,
+# so they sit behind QUANTLAB_ADMIN_TOKEN and are disabled when it is unset.
+
+@app.get("/cache", tags=["admin"], dependencies=[Depends(require_admin)])
 def cache_stats():
     return deps.cache.stats()
 
 
-@app.delete("/cache", tags=["meta"])
+@app.delete("/cache", tags=["admin"], dependencies=[Depends(require_admin)])
 def cache_clear(provider: str | None = Query(None)):
     return {"removed": deps.cache.clear(provider)}
 
@@ -149,7 +152,8 @@ def _run_backtest(req: schemas.BacktestRequest):
 
 
 @app.post("/backtest", response_model=schemas.JobRef, status_code=202,
-          tags=["backtest"])
+          tags=["backtest"],
+          dependencies=[Depends(enforce_submission_limits)])
 def submit_backtest(req: schemas.BacktestRequest):
     """Queue a backtest. Returns immediately with a job id to poll."""
     # Compile now so a bad spec fails fast with a 422 rather than becoming a
@@ -202,7 +206,8 @@ def get_equity(job_id: str):
     return series
 
 
-@app.get("/jobs", response_model=list[schemas.JobStatus], tags=["backtest"])
+@app.get("/jobs", response_model=list[schemas.JobStatus], tags=["admin"],
+         dependencies=[Depends(require_admin)])
 def list_jobs(limit: int = Query(25, ge=1, le=200)):
     return [schemas.JobStatus(**j) for j in deps.jobs.list(limit)]
 

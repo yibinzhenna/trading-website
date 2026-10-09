@@ -26,11 +26,30 @@ class Settings:
         self.workers = int(os.getenv("QUANTLAB_WORKERS", 2))
         self.max_bars = int(os.getenv("QUANTLAB_MAX_BARS", 5000))
         self.min_bars = int(os.getenv("QUANTLAB_MIN_BARS", 60))
+        # Unset disables admin endpoints entirely: closed by default.
+        self.admin_token = os.getenv("QUANTLAB_ADMIN_TOKEN", "")
+        # Backtest submissions per client per window.
+        self.rate_limit = int(os.getenv("QUANTLAB_RATE_LIMIT", 20))
+        self.rate_window = int(os.getenv("QUANTLAB_RATE_WINDOW", 60))
+        # Queued + running jobs across everyone. Protects the one instance.
+        self.max_inflight = int(os.getenv("QUANTLAB_MAX_INFLIGHT", 8))
+        # Reverse proxies in front of the app whose X-Forwarded-For entries
+        # can be trusted. 0 = use the socket address (local development).
+        self.trust_proxy_hops = int(os.getenv("QUANTLAB_TRUST_PROXY_HOPS", 0))
 
 
 settings = Settings()
 cache = BarCache(settings.cache_root, settings.cache_ttl)
 jobs = JobStore(workers=settings.workers)
+
+
+def _make_limiter():
+    # Imported here: api.security imports this module.
+    from api.security import RateLimiter
+    return RateLimiter(settings.rate_limit, settings.rate_window)
+
+
+limiter = _make_limiter()
 
 _PROVIDER_KWARGS = {"local": lambda s: {"root": s.data_root}}
 _providers = {}
@@ -67,10 +86,11 @@ def reset_for_tests(**overrides):
     so a second test module sharing the singleton would hit "cannot schedule
     new futures after shutdown" the moment it submitted anything.
     """
-    global cache, jobs
+    global cache, jobs, limiter
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
     jobs = JobStore(workers=settings.workers)
+    limiter = _make_limiter()
     _providers.clear()
     return cache
