@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quantlab — strategy backtesting</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>quantlab</h1>
+    <p>Backtest a strategy and find out whether the result is an edge or a fitted curve.</p>
+  </header>
+
+  <div class="card">
+    <h2>Strategy</h2>
+    <form class="controls" id="form">
+      <div>
+        <label for="symbol">Symbol</label>
+        <input id="symbol" name="symbol" value="SPY" autocomplete="off" required>
+      </div>
+      <div>
+        <label for="kind">Strategy</label>
+        <select id="kind" name="kind"></select>
+      </div>
+      <div>
+        <label for="cash">Starting cash</label>
+        <input id="cash" name="cash" type="number" value="1000" min="1" step="any">
+      </div>
+      <div>
+        <label for="slippage">Slippage (bps per side)</label>
+        <input id="slippage" name="slippage" type="number" value="10" min="0" step="1">
+      </div>
+      <div id="params"></div>
+      <div><button id="run" type="submit">Run backtest</button></div>
+    </form>
+    <p class="status" id="status"></p>
+  </div>
+
+  <div id="results" hidden>
+
+    <div class="card">
+      <h2>Verdict</h2>
+      <div class="verdict">
+        <span class="badge" id="verdict-badge"></span>
+        <span class="sub" id="verdict-sub"></span>
+      </div>
+      <div class="warn" id="overfit" hidden>
+        Profitable in-sample but not out-of-sample. That is the signature of a
+        fitted curve rather than an edge.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Performance</h2>
+      <div class="stats" id="stats"></div>
+      <p class="hint" id="cost-hint"></p>
+    </div>
+
+    <div class="card">
+      <h2>Equity curve</h2>
+      <div class="legend">
+        <span><i style="background:var(--series-strategy)"></i><span id="lg-strategy">Strategy</span></span>
+        <span><i style="background:var(--series-benchmark)"></i>Buy &amp; hold</span>
+      </div>
+      <div class="chartbox"><canvas id="chart"></canvas></div>
+      <p class="hint">Starting cash grown by each approach over the same window,
+         after costs. Beating the orange line is the bar.</p>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>Gates</h2>
+        <table id="gates"><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Robustness</h2>
+        <table id="robust"><tbody></tbody></table>
+        <p class="hint">Parameters are chosen on the in-sample period. Out-of-sample
+           is the part that was never fitted, so it is the number that counts.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Walk-forward folds</h2>
+      <table id="folds">
+        <thead><tr><th>Fold</th><th class="num">Return</th><th class="num">Sharpe</th><th class="num">Max DD</th><th class="num">Trades</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="hint">Sequential slices of the window. An edge that only appears in
+         one fold is a regime, not a strategy.</p>
+    </div>
+
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

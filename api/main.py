@@ -15,11 +15,15 @@ returning 404 for a job that is running perfectly well next door.
 
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
-from quantlab import StrategySpec, __version__, backtest
+from quantlab import StrategySpec, __version__, backtest, engine
 from quantlab.providers import ProviderError
 from quantlab.strategies import StrategyError, compile_strategy
 
@@ -102,9 +106,16 @@ def _run_backtest(req: schemas.BacktestRequest):
         interval=req.interval,
         criteria=req.criteria.as_dict() or None,
     )
-    # The equity curve is large and the summary endpoints never use it.
-    # A client that wants it can ask for the series separately later.
-    result.pop("equity", None)
+    # Keep the equity curve on the job for the chart endpoint, but strip it
+    # from the summary payload: it is by far the largest field and no summary
+    # view reads it.
+    curve = result.pop("equity", None)
+    bench = engine.buy_and_hold(bars, req.cash)
+    result["_series"] = {
+        "t": [b["t"].date().isoformat() for b in bars],
+        "strategy": [round(v, 4) for v in (curve or [])],
+        "benchmark": [round(v, 4) for v in bench],
+    }
     for section in ("in_sample", "out_of_sample"):
         result.get(section, {}).pop("equity", None)
     for fold in result.get("folds", []):
@@ -147,9 +158,43 @@ def get_backtest(job_id: str):
     job = deps.jobs.get(job_id)
     if job is None:
         raise HTTPException(404, f"No such job: {job_id}")
-    return schemas.JobStatus(**job.to_dict())
+    payload = job.to_dict()
+    if isinstance(payload.get("result"), dict):
+        payload["result"] = {k: v for k, v in payload["result"].items()
+                             if k != "_series"}
+    return schemas.JobStatus(**payload)
+
+
+@app.get("/backtest/{job_id}/equity", tags=["backtest"])
+def get_equity(job_id: str):
+    """Equity curve and benchmark, for charting.
+
+    Served separately because it dwarfs the summary and only one view needs it.
+    """
+    job = deps.jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"No such job: {job_id}")
+    if job.status != "done":
+        raise HTTPException(409, f"Job is {job.status}, not done")
+    series = (job.result or {}).get("_series")
+    if not series:
+        raise HTTPException(404, "No series recorded for this job")
+    return series
 
 
 @app.get("/jobs", response_model=list[schemas.JobStatus], tags=["backtest"])
 def list_jobs(limit: int = Query(25, ge=1, le=200)):
     return [schemas.JobStatus(**j) for j in deps.jobs.list(limit)]
+
+
+# ── Frontend ───────────────────────────────────────────────────────────────
+# Served from the same app so there is one process to run and no CORS in
+# development. A separate static host is a Phase 4 concern.
+
+_HERE = Path(__file__).parent
+app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(_HERE / "templates" / "index.html")

@@ -109,6 +109,7 @@ Interactive docs at `/docs`.
 | `GET /providers` | Which providers this server can actually serve |
 | `POST /backtest` | Queue a backtest, returns `202` and a job id |
 | `GET /backtest/{id}` | Poll for status and result |
+| `GET /backtest/{id}/equity` | Equity + benchmark series, for charting |
 | `GET /jobs` | Recent jobs |
 | `GET`/`DELETE /cache` | Inspect or clear cached bars |
 
@@ -147,6 +148,37 @@ cannot tell the difference.
 
 A stale entry is served when the provider fails. Yesterday's bars beat an
 error page.
+
+## Web UI
+
+```bash
+pip install -e ".[dev]"
+QUANTLAB_DATA_ROOT=tests/fixtures uvicorn api.main:app --reload --workers 1
+# open http://127.0.0.1:8000
+```
+
+Served from the same process as the API, so there is one thing to run and no
+CORS in development. No build step, no framework, no node — plain HTML, CSS
+and one script, with Chart.js from a CDN for the equity curve.
+
+Four panels, in the order the question gets answered:
+
+1. **Verdict** — pass or fail, and how many gates failed. Flags a result that
+   is profitable in-sample but not out-of-sample as a likely fitted curve.
+2. **Performance** — return against benchmark, excess, Sharpe, out-of-sample
+   Sharpe, drawdown, trades, win rate.
+3. **Equity curve** — strategy against buy-and-hold on one axis, both after
+   costs. Beating the benchmark line is the bar, so they are drawn together.
+4. **Gates, robustness and walk-forward folds** — every criterion with its
+   measured value, in-sample against out-of-sample, and each fold separately.
+
+Strategy parameter inputs are generated from `GET /strategies`, so adding a
+strategy server-side needs no frontend change.
+
+The two series use slots 1 and 2 of a validated categorical palette: ΔE 33.6
+normal vision and 24.7 worst-case colour-vision deficiency, both modes
+checked against their own surface. Light and dark are separate selections
+rather than an automatic flip.
 
 ## Configuration
 
@@ -194,5 +226,6 @@ api/
   main.py              FastAPI routes
   schemas.py           request/response models and validation
   deps.py              settings, provider wiring, singletons
-tests/                 104 tests, hermetic, no network
+  static/, templates/  web UI — no build step
+tests/                 114 tests, hermetic, no network
 ```

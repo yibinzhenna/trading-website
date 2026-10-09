@@ -57,10 +57,16 @@ def provider_status():
 
 
 def reset_for_tests(**overrides):
-    """Point the module at temp dirs so tests never touch real state."""
-    global cache
+    """Point the module at temp dirs and a fresh job pool.
+
+    The job store is rebuilt, not reused: app shutdown drains its thread pool,
+    so a second test module sharing the singleton would hit "cannot schedule
+    new futures after shutdown" the moment it submitted anything.
+    """
+    global cache, jobs
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
+    jobs = JobStore(workers=settings.workers)
     _providers.clear()
     return cache

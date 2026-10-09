@@ -1,0 +1,173 @@
+/* quantlab — no build step, no framework. Tokens first, roles throughout. */
+
+:root {
+  color-scheme: light;
+  --surface-0: #f4f4f1;
+  --surface-1: #fcfcfb;
+  --surface-2: #ffffff;
+  --border:    #e0dfd9;
+  --border-strong: #c9c8c0;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #85847c;
+
+  /* Validated against the chart surface in both modes. Slots 1 and 2 of the
+     categorical theme: ΔE 33.6 normal vision, 24.7 worst CVD. */
+  --series-strategy: #2a78d6;
+  --series-benchmark: #eb6834;
+
+  --pass: #197a3d;
+  --fail: #b3261e;
+  --pass-bg: #e7f3eb;
+  --fail-bg: #fbeae9;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #222221;
+    --border:    #333330;
+    --border-strong: #4a4a46;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8d8c84;
+    --series-strategy: #3987e5;
+    --series-benchmark: #d95926;
+    --pass: #6fcf8f;
+    --fail: #f08b84;
+    --pass-bg: #17251b;
+    --fail-bg: #2a1817;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem 1.25rem 4rem;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.wrap { max-width: 1060px; margin: 0 auto; }
+
+header { margin-bottom: 1.75rem; }
+header h1 { font-size: 1.4rem; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+header p { margin: 0.3rem 0 0; color: var(--text-secondary); font-size: 0.9rem; }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+.card h2 {
+  margin: 0 0 0.85rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ── Form ─────────────────────────────────────────────────────────────── */
+
+form.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.85rem;
+  align-items: end;
+}
+label { display: block; font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.3rem; }
+input, select {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+input:focus, select:focus { outline: 2px solid var(--series-strategy); outline-offset: 1px; }
+
+button {
+  padding: 0.55rem 1.3rem;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--surface-1);
+  background: var(--text-primary);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+button:hover { opacity: 0.88; }
+button:disabled { opacity: 0.45; cursor: progress; }
+
+#params { grid-column: 1 / -1; display: grid; gap: 0.85rem;
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+/* ── Status ───────────────────────────────────────────────────────────── */
+
+.status { font-size: 0.86rem; color: var(--text-secondary); min-height: 1.4rem; }
+.status.err { color: var(--fail); }
+
+/* ── Verdict ──────────────────────────────────────────────────────────── */
+
+.verdict { display: flex; align-items: baseline; gap: 0.8rem; flex-wrap: wrap; }
+.badge {
+  font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em;
+  padding: 0.25rem 0.65rem; border-radius: 999px;
+}
+.badge.pass { color: var(--pass); background: var(--pass-bg); }
+.badge.fail { color: var(--fail); background: var(--fail-bg); }
+.verdict .sub { color: var(--text-secondary); font-size: 0.88rem; }
+
+.warn {
+  margin-top: 0.75rem; padding: 0.6rem 0.8rem; border-radius: 6px;
+  background: var(--fail-bg); color: var(--fail); font-size: 0.86rem;
+  border-left: 3px solid var(--fail);
+}
+
+/* ── Stat tiles ───────────────────────────────────────────────────────── */
+
+.stats { display: grid; gap: 0.75rem;
+         grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); }
+.stat { background: var(--surface-2); border: 1px solid var(--border);
+        border-radius: 6px; padding: 0.7rem 0.8rem; }
+.stat .v { font-size: 1.22rem; font-weight: 600; font-variant-numeric: tabular-nums;
+           letter-spacing: -0.01em; }
+.stat .k { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem;
+           text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ── Chart ────────────────────────────────────────────────────────────── */
+
+.chartbox { position: relative; height: 320px; }
+.legend { display: flex; gap: 1.1rem; margin-bottom: 0.7rem; font-size: 0.82rem;
+          color: var(--text-secondary); }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
+            margin-right: 0.4rem; vertical-align: -1px; }
+
+/* ── Tables ───────────────────────────────────────────────────────────── */
+
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th { text-align: left; font-weight: 600; font-size: 0.7rem; color: var(--text-muted);
+     text-transform: uppercase; letter-spacing: 0.05em;
+     padding: 0 0.6rem 0.45rem; border-bottom: 1px solid var(--border); }
+td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border);
+     font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; }
+.ok { color: var(--pass); font-weight: 600; }
+.no { color: var(--fail); font-weight: 600; }
+
+.hint { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.7rem; }
+.grid2 { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; }
+@media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+[hidden] { display: none !important; }
