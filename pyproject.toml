@@ -10,10 +10,11 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic>=2.7"]
+dev = ["pytest>=8.0", "httpx>=0.27", "quantlab[web]"]
 
 [tool.setuptools.packages.find]
-include = ["quantlab*"]
+include = ["quantlab*", "api*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

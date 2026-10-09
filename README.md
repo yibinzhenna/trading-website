@@ -93,6 +93,73 @@ class MyProvider(DataProvider):
         return self._finish(rows, limit)
 ```
 
+## HTTP API
+
+```bash
+pip install -e ".[web]"
+QUANTLAB_DATA_ROOT=tests/fixtures uvicorn api.main:app --reload --workers 1
+```
+
+Interactive docs at `/docs`.
+
+| Route | Purpose |
+|---|---|
+| `GET /health` | Version, active provider, cache size, jobs in flight |
+| `GET /strategies` | Every kind with parameter names and defaults |
+| `GET /providers` | Which providers this server can actually serve |
+| `POST /backtest` | Queue a backtest, returns `202` and a job id |
+| `GET /backtest/{id}` | Poll for status and result |
+| `GET /jobs` | Recent jobs |
+| `GET`/`DELETE /cache` | Inspect or clear cached bars |
+
+Backtests run as background jobs because they are CPU-bound — a walk-forward
+plus a sweep takes seconds to minutes, which is far too long for a request
+handler. Submit, get an id, poll.
+
+```bash
+curl -X POST localhost:8000/backtest -H 'content-type: application/json'   -d '{"symbol":"SPY","kind":"breakout","params":{"lookback":20}}'
+# {"job_id":"fad81883b3304c63","status":"queued",...}
+
+curl localhost:8000/backtest/fad81883b3304c63
+```
+
+**Run one worker.** Jobs live in process memory, so a second uvicorn worker
+would accept a submission on one process and be asked for it on another,
+returning 404 for a job running perfectly well next door.
+
+### Why a thread pool and not Redis
+
+The plan called for arq plus Redis. The part that is painful to retrofit is
+the *submit -> poll* API shape, not whatever executes the work, and requiring
+a broker to run the dev server is real friction for no present benefit.
+
+`JobStore` is the seam. Moving to arq, Celery or RQ means writing one class
+with the same four methods and changing the wiring in `api/deps.py`. The API
+and any frontend never notice.
+
+### Caching
+
+Provider bars are cached to disk before anything else touches the API,
+because development alone will exhaust a free vendor tier in an afternoon —
+the same backtest re-run with different parameters asks for the same bars
+every time. `CachedProvider` satisfies the provider interface, so the engine
+cannot tell the difference.
+
+A stale entry is served when the provider fails. Yesterday's bars beat an
+error page.
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QUANTLAB_PROVIDER` | `local` | Default data provider |
+| `QUANTLAB_DATA_ROOT` | `data` | Where `local` reads files |
+| `QUANTLAB_CACHE_ROOT` | `cache` | Cached bars |
+| `QUANTLAB_CACHE_TTL` | `43200` | Cache lifetime, seconds |
+| `QUANTLAB_WORKERS` | `2` | Concurrent backtest jobs |
+| `QUANTLAB_MIN_BARS` | `60` | Refuse to backtest less than this |
+| `QUANTLAB_MAX_BARS` | `5000` | Cap bars per run |
+
 ## Known issues
 
 **The `min_trades: 30` gate is miscalibrated for daily bars.** Strategies of
@@ -121,5 +188,11 @@ quantlab/
     base.py            DataProvider interface
     local.py           CSV / JSONL
     alphavantage.py    daily bars
-tests/                 64 tests, hermetic, no network
+  cache.py             disk cache + CachedProvider wrapper
+  jobs.py              background job store
+api/
+  main.py              FastAPI routes
+  schemas.py           request/response models and validation
+  deps.py              settings, provider wiring, singletons
+tests/                 104 tests, hermetic, no network
 ```
