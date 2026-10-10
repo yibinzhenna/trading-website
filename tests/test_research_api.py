@@ -4,7 +4,6 @@ AI research over HTTP: who may start a session, and every limit on cost.
 
 import threading
 
-import pytest
 from fastapi.testclient import TestClient
 
 from api import deps

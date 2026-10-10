@@ -125,7 +125,6 @@ def test_one_slow_account_does_not_hold_up_others(tmp_path, monkeypatch):
     other user's and every visitor's submission behind it."""
     import time
     from api import security
-    from fastapi import Request
 
     def stripe(key):
         return hash(key) % len(security._STRIPES)
@@ -240,8 +239,7 @@ def test_old_visitor_rows_are_pruned(tmp_path):
     from sqlalchemy import func, select
     from api.store import visitor_usage
     with make_client(tmp_path, daily_limit=1, visitor_key=KEY,
-                     client_ip_header="cf-connecting-ip") as c:
-        from api import security
+                     client_ip_header="cf-connecting-ip"):
         deps.runs.visitor_record("stale", datetime.now(timezone.utc) - timedelta(hours=30))
         deps.runs.prune()
         with deps.runs.engine.connect() as conn:
