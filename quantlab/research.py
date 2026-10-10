@@ -355,14 +355,23 @@ def run_research(client, bars, symbol, goal="", *, model=DEFAULT_MODEL,
 
 
 def _account(state, resp):
-    """Token accounting. Cache reads are counted inside input_tokens by the
-    budget (they are still tokens sent) and reported separately because
-    they are billed at a small fraction of the price."""
+    """Token accounting.
+
+    In the Messages API, `input_tokens` counts only *uncached* input; tokens
+    read from or written to the cache are reported beside it. All of them
+    were sent, so all of them count toward `input_tokens` here and toward
+    the session budget. Cache reads are also kept separately because they
+    are billed at a small fraction of the price. (They used to be left out:
+    a live session showed 1,829 tokens used, "1,792 of them read from
+    cache", when 3,621 were used.)
+    """
     usage = resp.usage
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
     state["calls"] += 1
-    state["input_tokens"] += usage.input_tokens
+    state["input_tokens"] += usage.input_tokens + cache_read + cache_write
     state["output_tokens"] += usage.output_tokens
-    state["cache_read_tokens"] += getattr(usage, "cache_read_input_tokens", 0) or 0
+    state["cache_read_tokens"] += cache_read
     # Thinking was asked to be off. If a provider ignores that, this says so
     # rather than leaving it to be inferred from a surprising bill.
     state["thinking_blocks"] += sum(

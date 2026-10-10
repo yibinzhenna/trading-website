@@ -336,3 +336,35 @@ def test_references_kept_metrics_removed(text, kept, gone):
     out = scrub_metrics(text)
     assert all(k in out for k in kept), out
     assert not any(g in out for g in gone), out
+
+
+# ── Token accounting (issue #10) ───────────────────────────────────────────
+
+class CachingClient(FakeClient):
+    """Reports usage the way the Messages API does: input_tokens excludes
+    tokens read from or written to the cache."""
+
+    def create(self, **kw):
+        resp = super().create(**kw)
+        resp.usage = SimpleNamespace(input_tokens=100, output_tokens=50,
+                                     cache_read_input_tokens=600,
+                                     cache_creation_input_tokens=20)
+        return resp
+
+
+def test_cached_tokens_count_toward_the_total():
+    out = run_research(CachingClient(list(SIX)), BARS, "DEMO-REGIME")
+    calls = out["calls"]
+    assert out["input_tokens"] == calls * (100 + 600 + 20)
+    assert out["cache_read_tokens"] == calls * 600
+    assert out["cache_read_tokens"] < out["input_tokens"]   # a share of it
+
+
+def test_cached_tokens_count_toward_the_budget():
+    """Uncached input alone would never reach this budget; with cache reads
+    counted it is spent after three calls, and finish is forced."""
+    client = CachingClient(list(SIX))
+    out = run_research(client, BARS, "DEMO-REGIME", max_trials=8,
+                       token_budget=2000)
+    assert client.requests[-1]["tool_choice"] == {"type": "tool", "name": "finish"}
+    assert len(out["trials"]) < 6
