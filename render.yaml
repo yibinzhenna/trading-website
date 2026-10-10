@@ -33,6 +33,9 @@ services:
         value: "20"
       - key: QUANTLAB_RATE_WINDOW
         value: "60"
+      # Every request (bar /health), per network, per window.
+      - key: QUANTLAB_GENERAL_RATE_LIMIT
+        value: "300"
       - key: QUANTLAB_MAX_INFLIGHT
         value: "8"
       # Postgres for finished runs. Unset falls back to SQLite on the

@@ -33,6 +33,10 @@ class Settings:
         # Backtest submissions per client per window.
         self.rate_limit = int(os.getenv("QUANTLAB_RATE_LIMIT", 20))
         self.rate_window = int(os.getenv("QUANTLAB_RATE_WINDOW", 60))
+        # Every request, per network, per minute: a ceiling on floods of
+        # reads (saved results, sessions), which otherwise go unthrottled
+        # straight to the database. A page load is ~10; 0 turns it off.
+        self.general_rate_limit = int(os.getenv("QUANTLAB_GENERAL_RATE_LIMIT", 300))
         # Queued + running jobs across everyone. Protects the one instance.
         self.max_inflight = int(os.getenv("QUANTLAB_MAX_INFLIGHT", 8))
         # Header an edge proxy sets and overwrites, naming the real client.
@@ -205,6 +209,7 @@ def _make_daily_limiter():
 
 
 limiter = _make_limiter()
+general_limiter = _make_limiter(settings.general_rate_limit)
 user_limiter = _make_limiter(settings.user_rate_limit)
 daily_limiter = _make_daily_limiter()
 
@@ -255,7 +260,7 @@ def reset_for_tests(**overrides):
     new futures after shutdown" the moment it submitted anything.
     """
     global cache, jobs, limiter, runs, user_limiter, verifier, daily_limiter, \
-        research_jobs, research_client, research_network_limiter
+        research_jobs, research_client, research_network_limiter,         general_limiter
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
@@ -270,6 +275,7 @@ def reset_for_tests(**overrides):
     research_jobs = JobStore(workers=1, on_finish=_persist_research)
     research_client = _make_research_client()
     limiter = _make_limiter()
+    general_limiter = _make_limiter(settings.general_rate_limit)
     user_limiter = _make_limiter(settings.user_rate_limit)
     daily_limiter = _make_daily_limiter()
     research_network_limiter = _make_research_network_limiter()

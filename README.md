@@ -446,6 +446,7 @@ proxies, or leave both unset to use the socket address.
 | `QUANTLAB_RATE_WINDOW` | `60` | Window, seconds |
 | `QUANTLAB_MAX_INFLIGHT` | `8` | Queued + running jobs, all clients |
 | `QUANTLAB_MAX_BODY_BYTES` | `65536` | Largest request body; larger is refused unread (413) |
+| `QUANTLAB_GENERAL_RATE_LIMIT` | `300` | Requests of any kind per network per window (not /health); 0 = off |
 | `QUANTLAB_ENABLE_DOCS` | *(off)* | Serve /docs and /redoc (development only) |
 | `QUANTLAB_CLIENT_IP_HEADER` | *(unset)* | Edge-set client IP header, e.g. `cf-connecting-ip` |
 | `QUANTLAB_TRUST_PROXY_HOPS` | `0` | Trusted appending proxies; 0 uses the socket address |

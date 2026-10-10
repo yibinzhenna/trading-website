@@ -29,6 +29,8 @@ def _no_daily_cap_unless_asked():
     deps.settings.visitor_key = ""
     deps.settings.max_body_bytes = 64 * 1024
     deps.settings.research_network_daily_limit = 6
+    # Tests poll in tight loops; the general ceiling is tested on its own.
+    deps.settings.general_rate_limit = 0
     # Never a real research provider unless a test installs a fake one.
     deps.settings.anthropic_api_key = ""
     deps.settings.deepseek_api_key = ""

@@ -133,6 +133,23 @@ async def security_headers(request, call_next):
     return response
 
 
+@app.middleware("http")
+async def general_rate_limit(request, call_next):
+    """A per-network ceiling on every request. The specific limits cover
+    submissions; this covers the rest — mostly reads that would otherwise
+    go straight to the database unthrottled. /health is exempt so the
+    host's health checker is never refused."""
+    limit = deps.settings.general_rate_limit
+    if limit and request.url.path != "/health":
+        allowed, retry = deps.general_limiter.check(client_key(request))
+        if not allowed:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429, headers={"Retry-After": str(retry)},
+                content={"detail": f"Too many requests. Try again in {retry}s."})
+    return await call_next(request)
+
+
 # Added last, so it is outermost: oversized bodies are refused before any
 # other layer — including the one adding security headers — reads them.
 app.add_middleware(BodySizeLimit)

@@ -342,3 +342,40 @@ def test_visitor_pseudonym_covers_the_whole_network(tmp_path):
     deps.settings.visitor_key = "k"
     ids = {visitor_id(request_with(cf=f"2001:db8:1:2::{i}")) for i in range(1, 50)}
     assert len(ids) == 1
+
+
+# ── General request ceiling (patch E) ──────────────────────────────────────
+
+def test_every_route_shares_a_per_network_ceiling(tmp_path):
+    with make_client(tmp_path, client_ip_header="cf-connecting-ip") as c:
+        deps.settings.general_rate_limit = 5
+        deps.general_limiter = deps._make_limiter(5)
+        h = {"CF-Connecting-IP": "203.0.113.50"}
+        codes = [c.get(p, headers=h).status_code for p in
+                 ("/", "/strategies", "/symbols", "/backtest/0123456789abcdef",
+                  "/config", "/strategies")]
+        r = c.get("/config", headers=h)
+        other = c.get("/config", headers={"CF-Connecting-IP": "198.51.100.50"})
+    assert codes[:5] == [200, 200, 200, 404, 200] and codes[5] == 429
+    assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
+    assert other.status_code == 200
+
+
+def test_health_is_never_limited(tmp_path):
+    with make_client(tmp_path) as c:
+        deps.settings.general_rate_limit = 1
+        deps.general_limiter = deps._make_limiter(1)
+        assert {c.get("/health").status_code for _ in range(20)} == {200}
+
+
+def test_a_normal_visit_fits_with_room_to_spare(tmp_path):
+    """Page, assets, metadata, a run and ~20 polls: far under 300."""
+    with make_client(tmp_path) as c:
+        deps.settings.general_rate_limit = 300
+        deps.general_limiter = deps._make_limiter(300)
+        for p in ("/", "/static/app.css", "/static/account.js", "/static/app.js",
+                  "/strategies", "/symbols", "/config"):
+            assert c.get(p).status_code == 200
+        job = c.post("/backtest", json=BODY).json()["job_id"]
+        for _ in range(20):
+            assert c.get(f"/backtest/{job}").status_code == 200
