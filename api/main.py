@@ -587,6 +587,12 @@ def get_research(job_id: str):
                "state": job.result if job.status == "done"
                else job.meta.get("state")}
     out["expires_at"] = _expires(out.get("created_at"))
+    # The goal is what the user typed to steer the model, and may say more
+    # about them than they meant to share with whoever gets the link. The
+    # page never shows it; the public response no longer carries it.
+    out.pop("goal", None)
+    if isinstance(out.get("state"), dict):
+        out["state"] = {k: v for k, v in out["state"].items() if k != "goal"}
     return out
 
 

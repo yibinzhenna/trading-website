@@ -381,3 +381,25 @@ def test_a_rejected_request_does_not_use_up_the_network(tmp_path):
         other = start_from(c, account(2), "203.0.113.10")   # network has room
     assert refused.status_code == 429 and "Daily research limit" in refused.json()["detail"]
     assert other.status_code == 202
+
+
+# ── The goal stays private (patch F) ───────────────────────────────────────
+
+def test_shared_link_does_not_reveal_the_goal(tmp_path):
+    goal = "hedge my divorce settlement before the house sale"
+    client = BlockingClient(list(SCRIPT))
+    with make_client(tmp_path, client=client) as c:
+        job_id = c.post("/research", json=dict(BODY, goal=goal),
+                        headers=ALICE).json()["job_id"]
+        for _ in range(200):                       # while it runs
+            live = c.get(f"/research/{job_id}").json()
+            if (live.get("state") or {}).get("trials"):
+                break
+            threading.Event().wait(0.02)
+        client.release.set()
+        deps.research_jobs.wait(job_id, timeout=30)
+        done = c.get(f"/research/{job_id}").json()   # finished, from the DB
+    for body in (live, done):
+        assert "divorce" not in str(body)
+    # Still sent to the model, which is what it is for.
+    assert any("divorce" in r["messages"][0]["content"] for r in client.requests)
