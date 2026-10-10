@@ -179,7 +179,11 @@ under the per-IP limit. Signing in adds:
 - **Your runs**: every backtest started while signed in, newest first, with
   a delete button. Deleting a run also kills its link.
 - **A per-account limit** (`QUANTLAB_USER_RATE_LIMIT`, default 60 per window)
-  in place of the per-IP one. An account is a better identity than an
+  in place of the per-IP one, and a larger daily allowance
+  (`QUANTLAB_USER_DAILY_LIMIT`, 200 per 24 hours, against 50 for visitors).
+  Account usage is counted from the database, so it survives restarts;
+  visitor usage is counted per address in memory, because addresses are
+  never stored, and resets when the server does. An account is a better identity than an
   address: an office shares one IP, and one person can hop between several.
 
 The browser signs in with supabase-js and sends its access token as a Bearer
@@ -375,6 +379,8 @@ proxies, or leave both unset to use the socket address.
 | `SUPABASE_PUBLISHABLE_KEY` | *(unset)* | Browser key (`SUPABASE_ANON_KEY` also read) |
 | `SUPABASE_JWT_SECRET` | *(unset)* | Only for projects on the legacy HS256 secret |
 | `QUANTLAB_USER_RATE_LIMIT` | `60` | Submissions per signed-in user per window |
+| `QUANTLAB_DAILY_LIMIT` | `50` | Backtests per visitor address per 24 hours; 0 = no cap |
+| `QUANTLAB_USER_DAILY_LIMIT` | `200` | Backtests per account per 24 hours; 0 = no cap |
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables AI research (accounts required too) |
 | `QUANTLAB_RESEARCH_MODEL` | `claude-haiku-5-5` | Model for research sessions |
 | `QUANTLAB_RESEARCH_DAILY_LIMIT` | `3` | Sessions per user per 24 hours |

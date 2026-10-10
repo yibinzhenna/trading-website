@@ -20,6 +20,7 @@ import hmac
 import threading
 import time
 from collections import deque
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, Header, HTTPException, Request
 
@@ -124,6 +125,60 @@ class RateLimiter:
         for key in [k for k, q in self._hits.items()
                     if not q or now - q[-1] >= self.window]:
             del self._hits[key]
+
+
+# ── Daily backtest allowance ───────────────────────────────────────────────
+# Checked inside the submit handler, after validation and under one lock with
+# the submission itself: a request rejected as invalid costs nothing, and a
+# burst of parallel requests cannot all read the same count and slip past.
+
+daily_gate = threading.Lock()
+DAY = timedelta(days=1)
+
+
+def _user_runs_today(user):
+    """An account's backtests in the last 24 hours: saved runs plus anything
+    still in memory (in flight, or finished but not yet written)."""
+    since = datetime.now(timezone.utc) - DAY
+    seen = dict(deps.runs.owner_runs_since(user.id, since))
+    seen.update(deps.jobs.submitted_since(since.isoformat(timespec="milliseconds"),
+                                          owner_id=user.id))
+    return sorted(seen.values())
+
+
+def daily_usage(user):
+    """{used, limit, remaining} for an account, or None with no daily cap."""
+    limit = deps.settings.user_daily_limit
+    if not limit:
+        return None
+    used = len(_user_runs_today(user))
+    return {"used": used, "limit": limit, "remaining": max(0, limit - used)}
+
+
+def check_daily_limit(request: Request, user):
+    """Raise 429 once the 24-hour allowance is spent. Call while holding
+    `daily_gate`, immediately before submitting."""
+    if user is not None:
+        limit = deps.settings.user_daily_limit
+        if not limit:
+            return
+        stamps = _user_runs_today(user)
+        if len(stamps) >= limit:
+            oldest = datetime.fromisoformat(stamps[0])
+            retry = max(1, int((oldest + DAY - datetime.now(timezone.utc))
+                               .total_seconds()) + 1)
+            raise HTTPException(
+                429, f"Daily backtest limit reached ({limit} per 24 hours).",
+                headers={"Retry-After": str(retry)})
+        return
+    if not deps.settings.daily_limit:
+        return
+    allowed, retry = deps.daily_limiter.check(client_key(request))
+    if not allowed:
+        raise HTTPException(
+            429, f"Daily backtest limit reached ({deps.settings.daily_limit} "
+                 "per 24 hours). Sign in for a larger allowance.",
+            headers={"Retry-After": str(retry)})
 
 
 def enforce_submission_limits(request: Request,

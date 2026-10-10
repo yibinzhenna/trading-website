@@ -171,7 +171,17 @@ async function copyLink() {
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+async function loadBacktestQuota() {
+  try {
+    const me = await api("/me", { headers: await Account.headers() });
+    const q = me.backtests;
+    $("bt-quota").textContent = q
+      ? `${q.remaining} of ${q.limit} backtests left in the last 24 hours.` : "";
+  } catch { /* informational only; the server enforces the limit */ }
+}
+
 async function loadMyRuns() {
+  loadBacktestQuota();
   try {
     const runs = await api("/me/runs", { headers: await Account.headers() });
     $("runs-empty").hidden = runs.length > 0;

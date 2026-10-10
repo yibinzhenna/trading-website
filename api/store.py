@@ -220,6 +220,15 @@ class RunStore:
             out["result"] = row["result"]
         return out
 
+    def owner_runs_since(self, owner_id, since):
+        """(id, submitted_at ISO) of an owner's runs since `since`."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(runs.c.id, runs.c.submitted_at).where(
+                    runs.c.owner_id == owner_id,
+                    runs.c.submitted_at >= since)).all()
+        return [(r[0], _iso(r[1])) for r in rows]
+
     def list_for_owner(self, owner_id, limit=50):
         """A user's runs, newest first, summarised for a listing."""
         cols = (runs.c.id, runs.c.status, runs.c.symbol, runs.c.kind,

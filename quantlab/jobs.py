@@ -152,6 +152,14 @@ class JobStore:
             jobs = list(self._jobs.values())
         return [j.to_dict(include_result=False) for j in reversed(jobs)][:limit]
 
+    def submitted_since(self, since_iso, **meta):
+        """(id, submitted_at) of jobs submitted at or after `since_iso` whose
+        meta matches every given key, e.g. owner_id="...". """
+        with self._lock:
+            return [(j.id, j.submitted_at) for j in self._jobs.values()
+                    if j.submitted_at >= since_iso
+                    and all(j.meta.get(k) == v for k, v in meta.items())]
+
     def in_flight(self):
         """Jobs queued or running, across the whole store."""
         with self._lock:

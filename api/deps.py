@@ -57,6 +57,11 @@ class Settings:
         self.supabase_jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
         # Signed-in users get their own, larger allowance.
         self.user_rate_limit = int(os.getenv("QUANTLAB_USER_RATE_LIMIT", 60))
+        # Backtests per rolling 24 hours. 0 = no daily cap. Anonymous
+        # visitors are counted per address in memory (no IPs are stored, so
+        # this resets on restart); accounts are counted from the database.
+        self.daily_limit = int(os.getenv("QUANTLAB_DAILY_LIMIT", 50))
+        self.user_daily_limit = int(os.getenv("QUANTLAB_USER_DAILY_LIMIT", 200))
         # Other origins allowed to call the API from a browser, comma
         # separated. Empty (default): none. The UI is same-origin and needs
         # no CORS; opening it up lets any page run backtests from its
@@ -134,8 +139,14 @@ def _make_verifier():
     return TokenVerifier(settings.supabase_url, settings.supabase_jwt_secret)
 
 
+def _make_daily_limiter():
+    from api.security import RateLimiter
+    return RateLimiter(max(1, settings.daily_limit), 24 * 60 * 60)
+
+
 limiter = _make_limiter()
 user_limiter = _make_limiter(settings.user_rate_limit)
+daily_limiter = _make_daily_limiter()
 verifier = _make_verifier()
 
 _PROVIDER_KWARGS = {"local": lambda s: {"root": s.data_root}}
@@ -173,7 +184,7 @@ def reset_for_tests(**overrides):
     so a second test module sharing the singleton would hit "cannot schedule
     new futures after shutdown" the moment it submitted anything.
     """
-    global cache, jobs, limiter, runs, user_limiter, verifier, \
+    global cache, jobs, limiter, runs, user_limiter, verifier, daily_limiter, \
         research_jobs, research_client
     for k, v in overrides.items():
         setattr(settings, k, v)
@@ -185,6 +196,7 @@ def reset_for_tests(**overrides):
     research_client = _make_research_client()
     limiter = _make_limiter()
     user_limiter = _make_limiter(settings.user_rate_limit)
+    daily_limiter = _make_daily_limiter()
     verifier = _make_verifier()
     _providers.clear()
     return cache

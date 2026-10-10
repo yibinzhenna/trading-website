@@ -50,6 +50,11 @@ services:
         sync: false
       - key: QUANTLAB_USER_RATE_LIMIT
         value: "60"
+      # Backtests per rolling 24 hours: per visitor address, per account.
+      - key: QUANTLAB_DAILY_LIMIT
+        value: "50"
+      - key: QUANTLAB_USER_DAILY_LIMIT
+        value: "200"
       # AI research. Unset key = feature off. Set a monthly spend limit on
       # the key in the Anthropic console as well: these caps bound usage,
       # the console caps the bill.

@@ -22,14 +22,15 @@ from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
 from api.auth import User, optional_user, require_user
-from api.security import enforce_submission_limits, require_admin
+from api.security import (check_daily_limit, daily_gate, daily_usage,
+                          enforce_submission_limits, require_admin)
 from quantlab import StrategySpec, __version__, backtest, engine
 from quantlab.providers import ProviderError
 from quantlab.research import run_research
@@ -215,7 +216,7 @@ def _run_backtest(req: schemas.BacktestRequest):
 @app.post("/backtest", response_model=schemas.JobRef, status_code=202,
           tags=["backtest"],
           dependencies=[Depends(enforce_submission_limits)])
-def submit_backtest(req: schemas.BacktestRequest,
+def submit_backtest(req: schemas.BacktestRequest, request: Request,
                     user: User | None = Depends(optional_user)):
     """Queue a backtest. Returns immediately with a job id to poll."""
     # Compile now so a bad spec fails fast with a 422 rather than becoming a
@@ -233,12 +234,14 @@ def submit_backtest(req: schemas.BacktestRequest,
 
     # The request rides along in meta so a saved run can repopulate the form
     # it came from — that is what makes a shared link reproducible.
-    job = deps.jobs.submit(
-        "backtest", _run_backtest, req,
-        meta={"symbol": req.symbol, "kind": req.kind,
-              "interval": req.interval,
-              "request": req.model_dump(mode="json"),
-              "owner_id": user.id if user else None})
+    with daily_gate:
+        check_daily_limit(request, user)
+        job = deps.jobs.submit(
+            "backtest", _run_backtest, req,
+            meta={"symbol": req.symbol, "kind": req.kind,
+                  "interval": req.interval,
+                  "request": req.model_dump(mode="json"),
+                  "owner_id": user.id if user else None})
     return schemas.JobRef(**job.to_dict(include_result=False))
 
 
@@ -313,6 +316,7 @@ def me(user: User = Depends(require_user)):
     return {"id": user.id, "email": user.email,
             "rate_limit": deps.settings.user_rate_limit,
             "rate_window": deps.settings.rate_window,
+            "backtests": daily_usage(user),
             "research": _research_quota(user)}
 
 
