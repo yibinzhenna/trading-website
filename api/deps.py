@@ -41,6 +41,9 @@ class Settings:
         # Reverse proxies whose X-Forwarded-For entries can be trusted.
         # 0 = use the socket address (local development).
         self.trust_proxy_hops = int(os.getenv("QUANTLAB_TRUST_PROXY_HOPS", 0))
+        # Largest request body accepted, checked before it is read. Every
+        # real request is under 1 KB; an unbounded one could exhaust memory.
+        self.max_body_bytes = int(os.getenv("QUANTLAB_MAX_BODY_BYTES", 64 * 1024))
         # Where finished runs are kept. SQLite for development; set a
         # Postgres URL in production. Hosts with an ephemeral disk lose a
         # SQLite file on every restart, which is the problem this solves.

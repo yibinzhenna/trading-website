@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
+from api.limits import BodySizeLimit
 from api.store import StoreUnavailable
 from api.auth import User, optional_user, require_user
 from api.security import (check_daily_limit, daily_usage, submission_lock,
@@ -121,6 +122,11 @@ async def security_headers(request, call_next):
     if request.url.path.startswith(("/me", "/runs")):
         h.setdefault("Cache-Control", "no-store")
     return response
+
+
+# Added last, so it is outermost: oversized bodies are refused before any
+# other layer — including the one adding security headers — reads them.
+app.add_middleware(BodySizeLimit)
 
 
 @app.exception_handler(StoreUnavailable)
