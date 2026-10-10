@@ -54,7 +54,7 @@ MAX_OUTPUT_TOKENS = 600
 HYPOTHESIS_CHARS = 100
 NOTES_CHARS = 600
 
-SYSTEM = """You are quantlab's strategy research assistant. Find a configuration that will hold up on data you cannot see.
+SYSTEM = """You are quantcave's strategy research assistant. Find a configuration that will hold up on data you cannot see.
 
 Each run_backtest call tests one configuration on the research window and adds a row to the trial log. When the log's trial budget is spent, call finish. Your pick is then tested once on a later holdout you never see; only that test decides PASS or FAIL.
 

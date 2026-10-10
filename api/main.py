@@ -1,5 +1,5 @@
 """
-quantlab HTTP API.
+quantcave HTTP API.
 
 Submit a backtest, poll for it, get a graded result. Finished runs are
 written to a database (`api.store`), so a result link keeps working after
@@ -61,7 +61,7 @@ def _optional(fn, *args):
 
 app = FastAPI(
     lifespan=lifespan,
-    title="quantlab",
+    title="quantcave",
     version=__version__,
     summary="Strategy backtesting with overfit detection",
     # Off by default. FastAPI's docs pages load swagger-ui@5 and redoc@2 —

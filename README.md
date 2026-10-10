@@ -1,6 +1,12 @@
-# quantlab
+# quantcave
 
 Strategy backtesting with honest overfit detection.
+
+> **Name.** The site is *quantcave*; it was called *quantlab*, and the code
+> still is: the Python package (`quantlab/`), the `QUANTLAB_*` settings and
+> the Render service keep the old name. Renaming those would replace the
+> secrets Render generated for the existing settings and make Render create
+> a second service, for no visible change.
 
 Most retail backtesters will happily show you an in-sample curve fit and call
 it a strategy. This one splits the data, tests out-of-sample, walks forward,

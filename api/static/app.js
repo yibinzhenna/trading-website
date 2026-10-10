@@ -1,4 +1,4 @@
-/* quantlab frontend — vanilla, no build step.
+/* quantcave frontend — vanilla, no build step.
    Submits a backtest, polls the job, renders the result. */
 
 const $ = (id) => document.getElementById(id);

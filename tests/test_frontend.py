@@ -28,7 +28,7 @@ def finished(client, payload):
 
 def test_index_served(client):
     r = client.get("/")
-    assert r.status_code == 200 and "quantlab" in r.text
+    assert r.status_code == 200 and "quantcave" in r.text
 
 
 def test_css_and_js_served(client):

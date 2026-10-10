@@ -285,7 +285,7 @@ def test_docs_pages_are_off_by_default(tmp_path):
         assert c.get("/docs").status_code == 404
         assert c.get("/redoc").status_code == 404
         schema = c.get("/openapi.json")
-    assert schema.status_code == 200 and schema.json()["info"]["title"] == "quantlab"
+    assert schema.status_code == 200 and schema.json()["info"]["title"] == "quantcave"
 
 
 def test_no_path_is_exempt_from_the_csp_when_docs_are_off(tmp_path):
