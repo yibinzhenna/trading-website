@@ -82,7 +82,16 @@ visitor_usage = Table(
     Column("at", DateTime(timezone=True), nullable=False, index=True),
 )
 
-TABLES = ("runs", "research", "visitor_usage")
+# The identity (pseudonymised canonical email, see api.identity) behind each
+# research session, so the daily quota covers every account one inbox opened.
+research_identities = Table(
+    "research_identities", metadata,
+    Column("id", String(32), primary_key=True),       # research session id
+    Column("identity", String(64), nullable=False, index=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, index=True),
+)
+
+TABLES = ("runs", "research", "visitor_usage", "research_identities")
 IN_FLIGHT = ("queued", "running")
 
 
@@ -422,6 +431,9 @@ class RunStore:
         with self.engine.begin() as conn:
             conn.execute(delete(visitor_usage).where(
                 visitor_usage.c.at < now - timedelta(days=1)))
+            # Only the 24-hour quota window reads these; keep a day's margin.
+            conn.execute(delete(research_identities).where(
+                research_identities.c.created_at < now - timedelta(days=2)))
         if not self.retention_days:
             return 0
         cutoff = now - timedelta(days=self.retention_days)
@@ -459,12 +471,31 @@ class RunStore:
     # ── Research sessions ─────────────────────────────────────────────────
 
     @_guarded
-    def research_create(self, run_id, owner_id, symbol, goal, model):
+    def research_create(self, run_id, owner_id, symbol, goal, model,
+                        identity=None):
+        now = datetime.now(timezone.utc)
         with self.engine.begin() as conn:
             conn.execute(insert(research).values(
                 id=run_id, owner_id=owner_id, status="queued", symbol=symbol,
-                goal=goal, model=model, created_at=datetime.now(timezone.utc),
+                goal=goal, model=model, created_at=now,
                 input_tokens=0, output_tokens=0))
+            if identity:
+                conn.execute(insert(research_identities).values(
+                    id=run_id, identity=identity, created_at=now))
+
+    @_guarded
+    def research_identity_usage(self, identity, since):
+        """Sessions charged to an identity since `since`, across every
+        account it has used. Same charging rule as research_usage."""
+        q = (select(func.count()).select_from(
+                research_identities.join(
+                    research, research.c.id == research_identities.c.id))
+             .where(research_identities.c.identity == identity,
+                    research_identities.c.created_at >= since,
+                    or_(research.c.status != "failed",
+                        research.c.input_tokens > 0)))
+        with self.engine.connect() as conn:
+            return conn.execute(q).scalar()
 
     @_guarded
     def research_finish(self, run_id, status, state=None, error=None):

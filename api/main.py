@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
+from api.identity import identity_key
 from api.limits import BodySizeLimit
 from api.store import StoreUnavailable
 from api.auth import User, optional_user, require_user
@@ -414,9 +415,14 @@ def _day_ago():
 
 
 def _research_quota(user):
+    """Counted per identity — every account sharing a canonical email — and
+    per account, whichever is higher (an account whose email changed keeps
+    its own count)."""
     if not deps.research_enabled():
         return None
-    used = deps.runs.research_usage(_day_ago(), user.id)
+    since = _day_ago()
+    used = max(deps.runs.research_usage(since, user.id),
+               deps.runs.research_identity_usage(identity_key(user), since))
     limit = deps.settings.research_daily_limit
     return {"used": used, "limit": limit, "remaining": max(0, limit - used)}
 
@@ -494,7 +500,8 @@ def start_research(req: schemas.ResearchRequest,
                 headers={"Retry-After": "60"})
         job_id = secrets.token_hex(8)
         deps.runs.research_create(job_id, user.id, req.symbol, req.goal,
-                                  deps.research_model())
+                                  deps.research_model(),
+                                  identity=identity_key(user))
 
     deps.research_jobs.submit(
         "research", _run_research_job, job_id, deps.research_client, bars,

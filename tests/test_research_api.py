@@ -4,6 +4,8 @@ AI research over HTTP: who may start a session, and every limit on cost.
 
 import threading
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from api import deps
@@ -11,7 +13,9 @@ from api.auth import TokenVerifier
 from test_auth import URL, FakeJWKS, bearer, token
 from test_research import TREND, FakeClient, call
 
-ALICE, BOB = bearer(token("alice")), bearer(token("bob"))
+# Distinct inboxes: research quotas follow the email, not the account.
+ALICE = bearer(token("alice", email="alice@example.com"))
+BOB = bearer(token("bob", email="bob@example.com"))
 BODY = {"symbol": "DEMO-REGIME", "trials": 3}
 SCRIPT = [TREND, call("finish", pick=1, notes="Trend held; Sharpe 9.9.")]
 
@@ -227,3 +231,49 @@ def test_model_override_wins():
     _settings(deepseek_api_key="ds", research_provider="deepseek",
               research_model="deepseek-v4-pro")
     assert deps.research_model() == "deepseek-v4-pro"
+
+
+# ── One inbox, one research quota (layer 1) ────────────────────────────────
+
+from api.identity import canonical_email  # noqa: E402
+
+
+@pytest.mark.parametrize("variant", [
+    "jane.doe@gmail.com", "JANE.DOE@GMAIL.COM", "janedoe@gmail.com",
+    "j.a.n.e.d.o.e@gmail.com", "jane.doe+research@gmail.com",
+    "janedoe+1+2@googlemail.com", "  jane.doe@gmail.com "])
+def test_gmail_variants_are_one_inbox(variant):
+    assert canonical_email(variant) == "janedoe@gmail.com"
+
+
+def test_plus_tags_fold_everywhere_but_dots_only_at_gmail():
+    assert canonical_email("bob+x@outlook.com") == "bob@outlook.com"
+    assert canonical_email("bo.b@outlook.com") == "bo.b@outlook.com"
+    assert canonical_email("bob@outlook.com") != canonical_email("bob@gmail.com")
+
+
+def test_variant_accounts_share_one_research_quota(tmp_path):
+    """Three accounts, one inbox: three sessions in all, not three each."""
+    accounts = [bearer(token(f"acct{i}", email=e)) for i, e in enumerate(
+        ["jane.doe@gmail.com", "janedoe+2@gmail.com", "j.a.n.e.doe@googlemail.com"])]
+    with make_client(tmp_path, research_daily_limit=2) as c:
+        for acct in accounts[:2]:
+            deps.research_client = FakeClient(list(SCRIPT))
+            finish(c, acct)
+        r = start(c, accounts[2])
+        quota = c.get("/me", headers=accounts[2]).json()["research"]
+        other = start(c, bearer(token("someone", email="someone.else@gmail.com")))
+    assert r.status_code == 429 and "Daily research limit" in r.json()["detail"]
+    assert quota == {"used": 2, "limit": 2, "remaining": 0}
+    assert other.status_code == 202
+
+
+def test_emails_are_not_stored(tmp_path):
+    from sqlalchemy import select
+    from api.store import research_identities
+    with make_client(tmp_path) as c:
+        finish(c, bearer(token("x", email="private.person@gmail.com")))
+        with deps.runs.engine.connect() as conn:
+            stored = [r[0] for r in conn.execute(select(research_identities.c.identity))]
+    assert len(stored) == 1 and "@" not in stored[0] and "private" not in stored[0]
+    assert len(stored[0]) == 32

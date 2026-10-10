@@ -251,8 +251,10 @@ round (`quantlab/research.py`):
   passed but the holdout held too few trades for the significance gate.
   Too little evidence is a different finding from evidence against.
 
-Costs are bounded before anything is spent: sign-in required, a per-user
-daily quota (`QUANTLAB_RESEARCH_DAILY_LIMIT`, default 3), a site-wide daily
+Costs are bounded before anything is spent: sign-in required, a daily
+quota per *inbox* — accounts whose emails differ only by `+tags`, or for
+Gmail by dots or `googlemail.com`, share one allowance; the canonical email
+is stored only as a keyed hash (`api/identity.py`) — the per-user daily quota (`QUANTLAB_RESEARCH_DAILY_LIMIT`, default 3), a site-wide daily
 ceiling (`QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT`, 50), one session per user
 at a time, a short queue, a trial cap, a token budget per session, and a
 final turn that may only call `finish`. A session that fails before using
