@@ -165,3 +165,94 @@ def test_the_same_account_is_still_serialised():
     alice = type("U", (), {"id": "alice"})()
     assert security.submission_lock(req, alice) is security.submission_lock(req, alice)
     assert security.submission_lock(req, None) is security.submission_lock(req, None)
+
+
+# ── Visitor counts survive restarts (issue #5) ─────────────────────────────
+
+KEY = "test-visitor-key"
+VISITOR = {"CF-Connecting-IP": "203.0.113.9"}
+
+
+def restart():
+    """A new process: fresh memory limiter and job store, same database."""
+    deps.jobs.shutdown(wait=True)
+    deps.jobs = JobStore(workers=1, on_finish=deps._persist)
+    deps.daily_limiter = deps._make_daily_limiter()
+
+
+def test_visitor_count_survives_a_restart(tmp_path):
+    with make_client(tmp_path, daily_limit=2, visitor_key=KEY,
+                     client_ip_header="cf-connecting-ip") as c:
+        assert [post(c, VISITOR).status_code for _ in range(2)] == [202, 202]
+        restart()
+        r = post(c, VISITOR)
+    assert r.status_code == 429 and "Sign in" in r.json()["detail"]
+    assert int(r.headers["Retry-After"]) > 3600
+
+
+def test_without_a_key_the_count_is_memory_only(tmp_path):
+    """Documented fallback: no key, nothing stored, restart resets."""
+    with make_client(tmp_path, daily_limit=1, visitor_key="",
+                     client_ip_header="cf-connecting-ip") as c:
+        assert post(c, VISITOR).status_code == 202
+        assert post(c, VISITOR).status_code == 429
+        restart()
+        assert post(c, VISITOR).status_code == 202
+
+
+def test_addresses_are_never_stored(tmp_path):
+    from sqlalchemy import select
+    from api.store import visitor_usage
+    with make_client(tmp_path, daily_limit=5, visitor_key=KEY,
+                     client_ip_header="cf-connecting-ip") as c:
+        post(c, VISITOR)
+        post(c, {"CF-Connecting-IP": "198.51.100.4"})
+        with deps.runs.engine.connect() as conn:
+            stored = [r[0] for r in conn.execute(select(visitor_usage.c.visitor))]
+    assert len(stored) == 2 and len(set(stored)) == 2
+    assert not any("203.0.113.9" in v or "198.51.100.4" in v for v in stored)
+    assert all(len(v) == 32 and int(v, 16) >= 0 for v in stored)
+
+
+def test_pseudonym_depends_on_the_secret():
+    """Without the key the hash cannot be recomputed from a guessed address."""
+    from starlette.requests import Request
+    from api import security
+    req = Request({"type": "http", "headers": [], "client": ("203.0.113.9", 1)})
+    deps.settings.client_ip_header = ""
+    deps.settings.visitor_key = "a"
+    first = security.visitor_id(req)
+    deps.settings.visitor_key = "b"
+    assert security.visitor_id(req) != first
+    deps.settings.visitor_key = "a"
+    assert security.visitor_id(req) == first
+
+
+def test_visitors_are_counted_separately(tmp_path):
+    with make_client(tmp_path, daily_limit=1, visitor_key=KEY,
+                     client_ip_header="cf-connecting-ip") as c:
+        assert post(c, VISITOR).status_code == 202
+        assert post(c, VISITOR).status_code == 429
+        assert post(c, {"CF-Connecting-IP": "198.51.100.4"}).status_code == 202
+
+
+def test_old_visitor_rows_are_pruned(tmp_path):
+    from sqlalchemy import func, select
+    from api.store import visitor_usage
+    with make_client(tmp_path, daily_limit=1, visitor_key=KEY,
+                     client_ip_header="cf-connecting-ip") as c:
+        from api import security
+        deps.runs.visitor_record("stale", datetime.now(timezone.utc) - timedelta(hours=30))
+        deps.runs.prune()
+        with deps.runs.engine.connect() as conn:
+            left = conn.execute(select(func.count()).select_from(visitor_usage)).scalar()
+    assert left == 0
+
+
+def test_database_outage_falls_back_to_memory(tmp_path):
+    """No 503 for a visitor's backtest just because the count can't be saved."""
+    with make_client(tmp_path, daily_limit=1, visitor_key=KEY,
+                     client_ip_header="cf-connecting-ip",
+                     database_url=f"sqlite:///{(tmp_path / 'missing' / 'x.db').as_posix()}") as c:
+        assert post(c, VISITOR).status_code == 202
+        assert post(c, VISITOR).status_code == 429     # memory still counts

@@ -55,6 +55,11 @@ services:
         value: "50"
       - key: QUANTLAB_USER_DAILY_LIMIT
         value: "200"
+      # Keys the hash that pseudonymises visitor addresses, so the visitor
+      # daily count can live in the database and survive restarts. Render
+      # generates it; never commit it. Rotating it resets visitor counts.
+      - key: QUANTLAB_VISITOR_KEY
+        generateValue: true
       # AI research. Unset key = feature off. Set a monthly spend limit on
       # the key in the Anthropic console as well: these caps bound usage,
       # the console caps the bill.

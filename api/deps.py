@@ -62,6 +62,10 @@ class Settings:
         # this resets on restart); accounts are counted from the database.
         self.daily_limit = int(os.getenv("QUANTLAB_DAILY_LIMIT", 50))
         self.user_daily_limit = int(os.getenv("QUANTLAB_USER_DAILY_LIMIT", 200))
+        # Secret for pseudonymising visitor addresses so their daily count
+        # can be kept in the database and survive restarts. Unset: the count
+        # stays in memory and resets with the server.
+        self.visitor_key = os.getenv("QUANTLAB_VISITOR_KEY", "")
         # Other origins allowed to call the API from a browser, comma
         # separated. Empty (default): none. The UI is same-origin and needs
         # no CORS; opening it up lets any page run backtests from its

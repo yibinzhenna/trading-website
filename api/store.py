@@ -72,7 +72,17 @@ research = Table(
     Column("output_tokens", Integer, nullable=False, default=0),
 )
 
-TABLES = ("runs", "research")
+# Signed-out visitors' backtests, for the daily allowance. `visitor` is a
+# keyed hash of the address (see api.security.visitor_id), never the address
+# itself, and rows are deleted after a day.
+visitor_usage = Table(
+    "visitor_usage", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("visitor", String(64), nullable=False, index=True),
+    Column("at", DateTime(timezone=True), nullable=False, index=True),
+)
+
+TABLES = ("runs", "research", "visitor_usage")
 IN_FLIGHT = ("queued", "running")
 
 
@@ -405,11 +415,16 @@ class RunStore:
 
     @_guarded
     def prune(self):
-        """Delete runs past retention. Free Postgres tiers are a few hundred
-        MB, and one run with its curves is tens of KB."""
+        """Delete runs past retention, and visitor usage past a day. Free
+        Postgres tiers are a few hundred MB, and one run with its curves is
+        tens of KB."""
+        now = datetime.now(timezone.utc)
+        with self.engine.begin() as conn:
+            conn.execute(delete(visitor_usage).where(
+                visitor_usage.c.at < now - timedelta(days=1)))
         if not self.retention_days:
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
+        cutoff = now - timedelta(days=self.retention_days)
         with self.engine.begin() as conn:
             removed = conn.execute(
                 delete(runs).where(runs.c.submitted_at < cutoff)).rowcount
@@ -421,6 +436,25 @@ class RunStore:
             log.info("pruned %d runs older than %d days",
                      removed, self.retention_days)
         return removed
+
+    # ── Visitor usage ─────────────────────────────────────────────────────
+
+    @_guarded
+    def visitor_usage_since(self, visitor, since):
+        """ISO timestamps of a visitor's backtests since `since`, oldest
+        first."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(visitor_usage.c.at).where(
+                    visitor_usage.c.visitor == visitor,
+                    visitor_usage.c.at >= since)
+                .order_by(visitor_usage.c.at)).all()
+        return [_iso(r[0]) for r in rows]
+
+    @_guarded
+    def visitor_record(self, visitor, at):
+        with self.engine.begin() as conn:
+            conn.execute(insert(visitor_usage).values(visitor=visitor, at=at))
 
     # ── Research sessions ─────────────────────────────────────────────────
 

@@ -179,6 +179,40 @@ def daily_usage(user):
     return {"used": used, "limit": limit, "remaining": max(0, limit - used)}
 
 
+def visitor_id(request):
+    """A pseudonym for a signed-out visitor's address: HMAC-SHA256 under a
+    server secret, truncated. The address itself is never stored. A plain
+    hash would not do — every IPv4 address can be hashed in minutes — but
+    without the key the pseudonym cannot be reversed. None without a key."""
+    key = deps.settings.visitor_key
+    if not key:
+        return None
+    return hmac.new(key.encode(), client_key(request).encode(),
+                    "sha256").hexdigest()[:32]
+
+
+def _visitor_check(request, limit):
+    """Daily allowance for a visitor, counted in the database so restarts do
+    not reset it. Returns False if it could not be counted that way."""
+    visitor = visitor_id(request)
+    if visitor is None:
+        return False
+    now = datetime.now(timezone.utc)
+    try:
+        stamps = deps.runs.visitor_usage_since(visitor, now - DAY)
+        if len(stamps) >= limit:
+            oldest = datetime.fromisoformat(stamps[0])
+            retry = max(1, int((oldest + DAY - now).total_seconds()) + 1)
+            raise HTTPException(
+                429, f"Daily backtest limit reached ({limit} per 24 hours). "
+                     "Sign in for a larger allowance.",
+                headers={"Retry-After": str(retry)})
+        deps.runs.visitor_record(visitor, now)
+    except StoreUnavailable:
+        return False
+    return True
+
+
 def check_daily_limit(request: Request, user):
     """Raise 429 once the 24-hour allowance is spent. Call while holding
     `submission_lock(request, user)`, immediately before submitting."""
@@ -197,6 +231,10 @@ def check_daily_limit(request: Request, user):
         return
     if not deps.settings.daily_limit:
         return
+    if _visitor_check(request, deps.settings.daily_limit):
+        return
+    # No key configured, or the database is down: count in memory, which
+    # resets when the server restarts.
     allowed, retry = deps.daily_limiter.check(client_key(request))
     if not allowed:
         raise HTTPException(

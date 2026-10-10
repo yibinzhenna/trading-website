@@ -201,9 +201,13 @@ under the per-IP limit. Signing in adds:
 - **A per-account limit** (`QUANTLAB_USER_RATE_LIMIT`, default 60 per window)
   in place of the per-IP one, and a larger daily allowance
   (`QUANTLAB_USER_DAILY_LIMIT`, 200 per 24 hours, against 50 for visitors).
-  Account usage is counted from the database, so it survives restarts;
-  visitor usage is counted per address in memory, because addresses are
-  never stored, and resets when the server does. An account is a better identity than an
+  Both are counted in the database, so restarts do not reset them. A
+  visitor is recorded as a keyed hash of their address (HMAC-SHA256 under
+  `QUANTLAB_VISITOR_KEY`, truncated), never the address itself, and those
+  rows are deleted after a day. A plain hash would be reversible by hashing
+  every IPv4 address; without the key this one is not. With no key set, or
+  with the database down, visitors are counted in memory instead, which
+  resets with the server. An account is a better identity than an
   address: an office shares one IP, and one person can hop between several.
 
 The browser signs in with supabase-js and sends its access token as a Bearer
@@ -436,6 +440,7 @@ proxies, or leave both unset to use the socket address.
 | `QUANTLAB_USER_RATE_LIMIT` | `60` | Submissions per signed-in user per window |
 | `QUANTLAB_DAILY_LIMIT` | `50` | Backtests per visitor address per 24 hours; 0 = no cap |
 | `QUANTLAB_USER_DAILY_LIMIT` | `200` | Backtests per account per 24 hours; 0 = no cap |
+| `QUANTLAB_VISITOR_KEY` | *(unset)* | Secret for pseudonymising visitor addresses; enables restart-proof visitor counts |
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables AI research (accounts required too) |
 | `DEEPSEEK_API_KEY` | *(unset)* | Enables AI research on DeepSeek; takes priority |
 | `QUANTLAB_RESEARCH_PROVIDER` | *(auto)* | `anthropic` or `deepseek`; default follows the key set |
