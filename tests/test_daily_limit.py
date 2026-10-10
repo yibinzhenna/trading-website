@@ -115,3 +115,53 @@ def test_signing_in_does_not_inherit_the_visitor_count(tmp_path):
         assert post(c).status_code == 202
         assert post(c).status_code == 429
         assert post(c, ALICE).status_code == 202
+
+
+# ── Submitters do not wait on each other (issue #4) ────────────────────────
+
+def test_one_slow_account_does_not_hold_up_others(tmp_path, monkeypatch):
+    """The daily check for an account queries the database. It used to run
+    under one site-wide lock, so a slow query for one user stalled every
+    other user's and every visitor's submission behind it."""
+    import time
+    from api import security
+    from fastapi import Request
+
+    def stripe(key):
+        return hash(key) % len(security._STRIPES)
+
+    # A second user and a visitor address on different stripes from alice.
+    other = next(f"u{i}" for i in range(500)
+                 if stripe(f"user:u{i}") != stripe("user:alice"))
+    with make_client(tmp_path, user_daily_limit=50, daily_limit=50) as c:
+        original = deps.runs.owner_runs_since
+        gate = threading.Event()
+
+        def slow(owner_id, since):
+            if owner_id == "alice":
+                gate.wait(5)
+            return original(owner_id, since)
+
+        monkeypatch.setattr(deps.runs, "owner_runs_since", slow)
+        alice = threading.Thread(target=lambda: post(c, ALICE))
+        alice.start()
+        time.sleep(0.2)                       # alice is now inside her check
+        t = time.monotonic()
+        other_code = post(c, bearer(token(other))).status_code
+        visitor_code = post(c).status_code
+        elapsed = time.monotonic() - t
+        gate.set()
+        alice.join(10)
+    assert other_code == 202 and visitor_code == 202
+    assert elapsed < 2.0, f"waited {elapsed:.1f}s behind another user"
+
+
+def test_the_same_account_is_still_serialised():
+    """Striping must keep one submitter's requests on one lock, or the
+    parallel-burst guarantee breaks."""
+    from api import security
+    from starlette.requests import Request
+    req = Request({"type": "http", "headers": [], "client": ("1.2.3.4", 1)})
+    alice = type("U", (), {"id": "alice"})()
+    assert security.submission_lock(req, alice) is security.submission_lock(req, alice)
+    assert security.submission_lock(req, None) is security.submission_lock(req, None)

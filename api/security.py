@@ -129,12 +129,29 @@ class RateLimiter:
 
 
 # ── Daily backtest allowance ───────────────────────────────────────────────
-# Checked inside the submit handler, after validation and under one lock with
-# the submission itself: a request rejected as invalid costs nothing, and a
-# burst of parallel requests cannot all read the same count and slip past.
+# Checked inside the submit handler, after validation and under a lock held
+# with the submission itself: a request rejected as invalid costs nothing,
+# and a burst of parallel requests cannot all read the same count and slip
+# past.
+#
+# The lock is per submitter, not global. The check for an account queries
+# the database, and one site-wide lock held across that query made every
+# signed-in user's submission — and every visitor's behind them — wait on
+# everyone else's round trip. Only one submitter's own requests need to be
+# serialised against each other, so locks are striped by submitter: the
+# same key always maps to the same lock; different keys rarely share one.
 
-daily_gate = threading.Lock()
+_STRIPES = tuple(threading.Lock() for _ in range(64))
 DAY = timedelta(days=1)
+
+
+def submitter_key(request, user):
+    return f"user:{user.id}" if user is not None else f"ip:{client_key(request)}"
+
+
+def submission_lock(request, user):
+    """The lock to hold across the daily check and the submission."""
+    return _STRIPES[hash(submitter_key(request, user)) % len(_STRIPES)]
 
 
 def _user_runs_today(user):
@@ -164,7 +181,7 @@ def daily_usage(user):
 
 def check_daily_limit(request: Request, user):
     """Raise 429 once the 24-hour allowance is spent. Call while holding
-    `daily_gate`, immediately before submitting."""
+    `submission_lock(request, user)`, immediately before submitting."""
     if user is not None:
         limit = deps.settings.user_daily_limit
         if not limit:

@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from api import deps, schemas
 from api.store import StoreUnavailable
 from api.auth import User, optional_user, require_user
-from api.security import (check_daily_limit, daily_gate, daily_usage,
+from api.security import (check_daily_limit, daily_usage, submission_lock,
                           enforce_submission_limits, require_admin)
 from quantlab import StrategySpec, __version__, backtest, engine
 from quantlab.providers import ProviderError
@@ -259,7 +259,7 @@ def submit_backtest(req: schemas.BacktestRequest, request: Request,
 
     # The request rides along in meta so a saved run can repopulate the form
     # it came from — that is what makes a shared link reproducible.
-    with daily_gate:
+    with submission_lock(request, user):
         check_daily_limit(request, user)
         job = deps.jobs.submit(
             "backtest", _run_backtest, req,
