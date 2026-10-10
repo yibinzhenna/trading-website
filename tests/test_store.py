@@ -255,3 +255,47 @@ def test_close_waits_for_work_in_progress(tmp_path, monkeypatch):
     closer.join(5)
     worker.join(5)
     assert not closer.is_alive() and time.monotonic() - t < 5
+
+
+# ── Expiry is visible, not silent (issue #6) ───────────────────────────────
+
+def _days_between(a, b):
+    return (datetime.fromisoformat(b) - datetime.fromisoformat(a)).days
+
+
+def test_results_say_when_they_expire(tmp_path):
+    with make_client(tmp_path, run_retention_days=30) as c:
+        job_id = finish(c, BODY)
+        live = c.get(f"/backtest/{job_id}").json()
+        restart()
+        saved = c.get(f"/backtest/{job_id}").json()
+    for body in (live, saved):
+        assert _days_between(body["submitted_at"], body["expires_at"]) == 30
+
+
+def test_config_and_listing_report_retention(tmp_path):
+    from test_auth import FakeJWKS, URL, bearer, token
+    from api.auth import TokenVerifier
+    with make_client(tmp_path, run_retention_days=7) as c:
+        deps.verifier = TokenVerifier(URL, jwks_client=FakeJWKS())
+        alice = bearer(token("alice"))
+        job_id = c.post("/backtest", json=BODY, headers=alice).json()["job_id"]
+        deps.jobs.wait(job_id, timeout=60)
+        assert c.get("/config").json()["retention_days"] == 7
+        row = c.get("/me/runs", headers=alice).json()[0]
+    assert _days_between(row["submitted_at"], row["expires_at"]) == 7
+
+
+def test_an_expired_link_explains_itself(tmp_path):
+    with make_client(tmp_path, run_retention_days=30) as c:
+        r = c.get("/backtest/0123456789abcdef")
+        eq = c.get("/backtest/0123456789abcdef/equity")
+    assert r.status_code == 404 and "kept for 30 days" in r.json()["detail"]
+    assert eq.status_code == 404 and "expired" in eq.json()["detail"]
+
+
+def test_no_expiry_when_retention_is_off(tmp_path):
+    with make_client(tmp_path, run_retention_days=0) as c:
+        job_id = finish(c, BODY)
+        assert c.get(f"/backtest/{job_id}").json()["expires_at"] is None
+        assert "kept for" not in c.get("/backtest/0123456789abcdef").json()["detail"]

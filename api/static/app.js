@@ -109,8 +109,18 @@ async function poll(jobId, timeoutMs = 120000) {
    bring a result back: after a restart, on another device, for someone else.
    The id is 64 random bits; the link is the only way to find a run. */
 
+const day = (iso) => new Date(iso).toLocaleDateString(undefined,
+  { month: "short", day: "numeric", year: "numeric" });
+
+/* Saved results are deleted after the retention period. Say when, wherever
+   a result or its link appears, so a link that stops working is expected. */
+function expiryNote(iso) {
+  return iso ? `This result and its link are kept until ${day(iso)}.` : "";
+}
+
 async function show(job) {
   render(job.result);
+  $("expiry").textContent = expiryNote(job.expires_at);
   // Reveal before charting: Chart.js measures its container, and a hidden
   // element is 0x0, which it sizes the canvas to and never recovers from.
   $("results").hidden = false;
@@ -182,6 +192,9 @@ async function loadBacktestQuota() {
 
 async function loadMyRuns() {
   loadBacktestQuota();
+  const keep = Account.config().retention_days;
+  $("runs-retention").textContent = keep
+    ? `Runs are kept for ${keep} days, then deleted along with their links.` : "";
   try {
     const runs = await api("/me/runs", { headers: await Account.headers() });
     $("runs-empty").hidden = runs.length > 0;
@@ -192,7 +205,8 @@ async function loadMyRuns() {
       const verdict = r.status === "failed" ? `<span class="no">ERROR</span>`
         : `<span class="${r.passed ? "ok" : "no"}">${r.passed ? "PASS" : "FAIL"}</span>`;
       const num = (v) => (typeof v === "number" ? pct(v) : "—");
-      return `<tr data-run="${esc(r.job_id)}">
+      return `<tr data-run="${esc(r.job_id)}"
+        title="${r.expires_at ? `Kept until ${esc(day(r.expires_at))}` : ""}">
         <td>${esc(when)}</td><td>${esc(r.symbol)}</td>
         <td>${esc(r.kind.replace(/_/g, " "))}</td><td>${verdict}</td>
         <td class="num">${num(r.total_return_pct)}</td>
@@ -370,7 +384,8 @@ function renderResearch(s) {
     `same research window, so the best of them is flattered by the search; ` +
     `the holdout result above is the one that counts. ` +
     `${(st.input_tokens + st.output_tokens).toLocaleString()} tokens used` +
-    (st.cache_read_tokens ? `, ${st.cache_read_tokens.toLocaleString()} of them read from cache.` : ".");
+    (st.cache_read_tokens ? `, ${st.cache_read_tokens.toLocaleString()} of them read from cache.` : ".") +
+    (s.expires_at ? ` Kept until ${day(s.expires_at)}.` : "");
   $("r-load").onclick = () => {
     fillForm({ symbol: s.symbol, kind: f.kind, params: f.params });
     $("form").scrollIntoView({ behavior: "smooth" });

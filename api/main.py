@@ -270,11 +270,32 @@ def submit_backtest(req: schemas.BacktestRequest, request: Request,
     return schemas.JobRef(**job.to_dict(include_result=False))
 
 
+def _expires(iso):
+    """When a run or session submitted at `iso` is pruned, or None when
+    retention is off. Shown wherever a result is, so deletion is never a
+    surprise: a shared link used to just stop working after 30 days."""
+    days = deps.settings.run_retention_days
+    if not days or not iso:
+        return None
+    return (datetime.fromisoformat(iso) + timedelta(days=days)).isoformat(
+        timespec="milliseconds")
+
+
+def _gone(what, job_id):
+    days = deps.settings.run_retention_days
+    if not days:
+        return HTTPException(404, f"No such {what}: {job_id}.")
+    return HTTPException(
+        404, f"No such {what}: {job_id}. Results are kept for {days} days, "
+             "so this one may have expired, or it was deleted.")
+
+
 def _public(payload):
     """Strip what a public reader should not get: the equity curves (served
     separately), server tracebacks (paths and source lines, for the log) and
     who submitted it (a link is shareable; the account behind it is not)."""
     payload = dict(payload)
+    payload["expires_at"] = _expires(payload.get("submitted_at"))
     payload["meta"] = {k: v for k, v in payload.get("meta", {}).items()
                        if k not in ("traceback", "owner_id")}
     if isinstance(payload.get("result"), dict):
@@ -294,7 +315,7 @@ def get_backtest(job_id: str):
         return schemas.JobStatus(**_public(job.to_dict()))
     saved = deps.runs.get(job_id)
     if saved is None:
-        raise HTTPException(404, f"No such job: {job_id}")
+        raise _gone("result", job_id)
     return schemas.JobStatus(**_public(saved))
 
 
@@ -312,7 +333,7 @@ def get_equity(job_id: str):
     else:
         series = deps.runs.series(job_id)
         if series is None and deps.runs.get(job_id) is None:
-            raise HTTPException(404, f"No such job: {job_id}")
+            raise _gone("result", job_id)
     if not series:
         raise HTTPException(404, "No series recorded for this job")
     return series
@@ -330,10 +351,11 @@ def client_config():
         research = {"daily_limit": s.research_daily_limit,
                     "max_trials": s.research_max_trials}
     if not (deps.verifier and s.supabase_publishable_key):
-        return {"auth": None, "research": None}
+        return {"auth": None, "research": None,
+                "retention_days": s.run_retention_days}
     return {"auth": {"provider": "supabase", "url": s.supabase_url,
                      "publishable_key": s.supabase_publishable_key},
-            "research": research}
+            "research": research, "retention_days": s.run_retention_days}
 
 
 @app.get("/me", tags=["account"])
@@ -350,7 +372,8 @@ def my_runs(limit: int = Query(50, ge=1, le=200),
             user: User = Depends(require_user)):
     """Your saved runs, newest first. Only finished runs appear: a run is
     written when it completes."""
-    return deps.runs.list_for_owner(user.id, limit)
+    return [dict(r, expires_at=_expires(r["submitted_at"]))
+            for r in deps.runs.list_for_owner(user.id, limit)]
 
 
 @app.delete("/runs/{run_id}", status_code=204, tags=["account"])
@@ -480,26 +503,29 @@ def get_research(job_id: str):
             raise
         saved = None          # a session in memory can still be shown
     if job is None and saved is None:
-        raise HTTPException(404, f"No such research session: {job_id}")
+        raise _gone("research session", job_id)
     if job is not None and job.status not in ("done", "failed"):
         out = dict(saved or {"job_id": job_id, "kind": "research",
                              "symbol": job.meta.get("symbol"),
                              "goal": job.meta.get("goal")})
         out.update(status=job.status, state=job.meta.get("state"))
-        return out
-    if saved is not None:
-        return saved
-    out = {"job_id": job_id, "kind": "research", "status": job.status,
-           "symbol": job.meta.get("symbol"), "goal": job.meta.get("goal"),
-           "error": job.error,
-           "state": job.result if job.status == "done" else job.meta.get("state")}
+    elif saved is not None:
+        out = dict(saved)
+    else:
+        out = {"job_id": job_id, "kind": "research", "status": job.status,
+               "symbol": job.meta.get("symbol"), "goal": job.meta.get("goal"),
+               "error": job.error,
+               "state": job.result if job.status == "done"
+               else job.meta.get("state")}
+    out["expires_at"] = _expires(out.get("created_at"))
     return out
 
 
 @app.get("/me/research", tags=["research"])
 def my_research(limit: int = Query(20, ge=1, le=100),
                 user: User = Depends(require_user)):
-    return {"sessions": deps.runs.research_list(user.id, limit),
+    return {"sessions": [dict(r, expires_at=_expires(r["created_at"]))
+                         for r in deps.runs.research_list(user.id, limit)],
             "quota": _research_quota(user)}
 
 

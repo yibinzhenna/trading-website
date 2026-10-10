@@ -25,6 +25,7 @@ def _no_daily_cap_unless_asked():
     from api import deps
     deps.settings.daily_limit = 0
     deps.settings.user_daily_limit = 0
+    deps.settings.run_retention_days = 30
     # Never a real research provider unless a test installs a fake one.
     deps.settings.anthropic_api_key = ""
     deps.settings.deepseek_api_key = ""

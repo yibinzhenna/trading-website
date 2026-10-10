@@ -134,7 +134,8 @@ def test_config_offers_sign_in_when_configured(tmp_path):
 
 def test_config_says_no_accounts_when_unconfigured(tmp_path):
     with make_client(tmp_path, auth=False) as c:
-        assert c.get("/config").json() == {"auth": None, "research": None}
+        assert c.get("/config").json() == {"auth": None, "research": None,
+                                            "retention_days": 30}
         assert c.get("/me").status_code == 503
 
 

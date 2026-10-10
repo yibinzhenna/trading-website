@@ -97,6 +97,8 @@ class JobStatus(JobRef):
     duration_sec: float | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    expires_at: str | None = Field(
+        None, description="When the saved copy is deleted; null if kept forever")
 
 
 class StrategyInfo(BaseModel):
