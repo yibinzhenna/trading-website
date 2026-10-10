@@ -211,3 +211,47 @@ def test_infinite_metrics_save_as_null(tmp_path):
 ])
 def test_url_normalisation(url, expected):
     assert normalise_url(url) == expected
+
+
+# ── Closing ────────────────────────────────────────────────────────────────
+
+def test_closed_store_refuses_new_work(tmp_path):
+    from api.store import StoreUnavailable
+    s = store(tmp_path)
+    s.count()
+    s.close()
+    with pytest.raises(StoreUnavailable):
+        s.count()
+    s.close()                                  # idempotent
+
+
+def test_close_waits_for_work_in_progress(tmp_path, monkeypatch):
+    """A save racing a shutdown used to hand its connection back to a
+    disposed pool, leaking it."""
+    import threading
+    import time
+    s = store(tmp_path)
+    s.count()
+    started, release = threading.Event(), threading.Event()
+    original = type(s).count.__wrapped__
+
+    def slow_count(self):
+        started.set()
+        release.wait(5)
+        return original(self)
+
+    from api import store as store_mod
+    monkeypatch.setattr(store_mod.RunStore, "count",
+                        store_mod._guarded(slow_count))
+    worker = threading.Thread(target=s.count)
+    worker.start()
+    started.wait(5)
+    closer = threading.Thread(target=s.close)
+    t = time.monotonic()
+    closer.start()
+    time.sleep(0.2)
+    assert closer.is_alive()                   # waiting for the count
+    release.set()
+    closer.join(5)
+    worker.join(5)
+    assert not closer.is_alive() and time.monotonic() - t < 5

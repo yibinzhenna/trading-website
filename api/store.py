@@ -94,12 +94,20 @@ def _guarded(fn):
     Other database errors are bugs and propagate unchanged."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
-        self._ensure()
+        with self._busy:
+            if self._closed:
+                raise StoreUnavailable("the store is closed")
+            self._active += 1
         try:
+            self._ensure()
             return fn(self, *args, **kwargs)
         except _CONNECTIVITY as e:
             self._trip(e)
             raise StoreUnavailable("the database is unreachable") from e
+        finally:
+            with self._busy:
+                self._active -= 1
+                self._busy.notify_all()
     return wrapper
 
 
@@ -175,11 +183,17 @@ class RunStore:
         self._down_until = 0.0
         self._health = ("unknown", float("-inf"))
         self._probing = threading.Lock()
+        self._closed = False
+        # Operations in progress, so close() can wait for them.
+        self._busy = threading.Condition()
+        self._active = 0
 
     # ── Availability ──────────────────────────────────────────────────────
 
     def _ensure(self):
         """Fast-fail while tripped; otherwise create the schema once."""
+        if self._closed:
+            raise StoreUnavailable("the store is closed")
         if time.monotonic() < self._down_until:
             raise StoreUnavailable("the database is unreachable")
         if self._ready:
@@ -502,4 +516,13 @@ class RunStore:
                 "error": row["error"], "state": row["state"]}
 
     def close(self):
-        self.engine.dispose()
+        """Release every connection. New operations are refused at once;
+        operations, schema setup and health probes already in progress are
+        waited for (up to 10 s), because a connection they hold would
+        otherwise be returned to a disposed pool and never closed.
+        Idempotent."""
+        with self._busy:
+            self._closed = True
+            self._busy.wait_for(lambda: self._active == 0, timeout=10)
+        with self._init_lock, self._probing:
+            self.engine.dispose()

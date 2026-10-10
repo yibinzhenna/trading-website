@@ -31,3 +31,33 @@ def _no_daily_cap_unless_asked():
     deps.settings.research_provider = "anthropic"
     deps.settings.research_model = ""
     yield
+
+
+@pytest.fixture(autouse=True)
+def _close_stray_stores(monkeypatch):
+    """Close every RunStore a test created and abandoned — a helper's store,
+    or the one replaced to simulate a restart. Left open, each leaks its
+    SQLite connections until garbage collection, with a ResourceWarning.
+    The store currently installed in deps is closed by the next reset."""
+    from api import deps, store
+    created = []
+    original = store.RunStore.__init__
+
+    def tracking(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(store.RunStore, "__init__", tracking)
+    yield
+    for s in created:
+        if s is not deps.runs:
+            s.close()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _close_the_last_store():
+    yield
+    from api import deps
+    deps.jobs.shutdown(wait=True)
+    deps.research_jobs.shutdown(wait=True)
+    deps.runs.close()
