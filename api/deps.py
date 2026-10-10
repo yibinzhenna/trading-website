@@ -100,18 +100,18 @@ settings = Settings()
 cache = BarCache(settings.cache_root, settings.cache_ttl)
 
 
-def _persist(job):
+def _persist(job, status):
     if job.kind == "backtest":
-        runs.save(job)
+        runs.save(job, status)
 
 
 def _make_runs():
     return RunStore(settings.database_url, settings.run_retention_days)
 
 
-def _persist_research(job):
+def _persist_research(job, status):
     state = job.meta.get("state")
-    if job.status == "done":
+    if status == "done":
         runs.research_finish(job.id, "done", job.result)
     else:
         runs.research_finish(job.id, "failed", state, job.error)
@@ -232,6 +232,11 @@ def reset_for_tests(**overrides):
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
+    # Let the previous test's jobs finish first. Their results are saved to
+    # whatever `runs` is when they finish, so a straggler would otherwise
+    # land in the next test's fresh database.
+    jobs.shutdown(wait=True)
+    research_jobs.shutdown(wait=True)
     runs.close()
     runs = _make_runs()
     jobs = JobStore(workers=settings.workers, on_finish=_persist)

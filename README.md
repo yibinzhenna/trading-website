@@ -168,8 +168,28 @@ is right for development and wrong for an ephemeral-disk host, where it is
 wiped on every restart. Any `postgres://` URL works (Neon, Supabase, Render
 Postgres). Runs older than `QUANTLAB_RUN_RETENTION_DAYS` are pruned.
 
-Saving is best effort. If the database is down the job still completes and
-its result is still served from memory; the failure is logged.
+Saving is best effort, and the database is never on the critical path for
+running a backtest:
+
+- **Startup does not touch it.** The schema is created in the background, so
+  the server starts in about a second even if the database is down. (It used
+  to connect at startup with no timeout: an unreachable database held startup
+  for over two minutes, then crashed it — taking backtests down with it.)
+- **Connections time out after 5 seconds**, and a failure trips a breaker:
+  for the next 15 seconds database calls fail instantly instead of each
+  request waiting out the timeout.
+- **During an outage** backtests run and are served from memory; anything
+  that needs saved data (old result links, Your runs, deleting) returns 503
+  with a plain message; the signed-in daily cap counts from memory; and AI
+  research refuses to start, because its quotas live in the database and a
+  session nothing is counting must not spend money.
+- **`/health` reports, it does not enforce.** It answers immediately with
+  `database_status` ("ok", "unavailable", "unknown") from a background
+  probe. Failing the health check would make the host restart a server that
+  is still serving backtests.
+- **Saved, then published.** A job's result is saved before its status turns
+  terminal, so a client that sees "done" can always find the run in its
+  listing.
 
 ### Accounts
 
@@ -216,6 +236,13 @@ round (`quantlab/research.py`):
   as commentary, and metric figures in them are replaced with "[see table]".
 - **Disclosure.** The result says how many trials were tried, and that the
   best of them is flattered by the search.
+- **A fair holdout.** The holdout is warm-started: indicators read the
+  research window as history, so a strategy can act from the holdout's first
+  bar instead of losing its lookback period idle. It cannot trade before
+  the holdout, and no holdout bar reaches an earlier decision.
+- **Three verdicts.** PASS; FAIL; or INCONCLUSIVE when every performance gate
+  passed but the holdout held too few trades for the significance gate.
+  Too little evidence is a different finding from evidence against.
 
 Costs are bounded before anything is spent: sign-in required, a per-user
 daily quota (`QUANTLAB_RESEARCH_DAILY_LIMIT`, default 3), a site-wide daily
@@ -427,6 +454,19 @@ proxies, or leave both unset to use the socket address.
 since they make 2–14 trades a year. It is replaced by a one-sided t-test on
 per-trade returns, whose bar rises automatically as the sample shrinks.
 
+*Resolved:* AI research could practically never pass. The 150-bar holdout
+of the 500-bar demo series held about one trade per strategy, short of the
+significance gate, and every strategy started it cold. The holdout is now
+warm-started, DEMO-REGIME is 15 years long (see sampledata/README.md), and a
+too-short holdout reads INCONCLUSIVE rather than FAIL.
+
+*Resolved:* an unreachable database stalled startup for over two minutes and
+then crashed the server. See *Saved runs and result links* above.
+
+*Resolved:* a finished job's status was published before its result was
+saved, so a listing read straight after could miss it, and a research
+session could briefly read "running" after finishing.
+
 *Resolved:* a position still open at the last bar appended its close-out as
 an extra equity point, so the strategy curve was one point longer than the
 dates and the benchmark. The close-out now replaces the last bar's mark.
@@ -453,6 +493,8 @@ quantlab/
   cache.py             disk cache + CachedProvider wrapper
   jobs.py              background job store
   research.py          AI research loop: holdout, budgets, scrubbing
+scripts/
+  make_sampledata.py   regenerates sampledata/DEMO-REGIME.jsonl exactly
 api/
   main.py              FastAPI routes
   schemas.py           request/response models and validation

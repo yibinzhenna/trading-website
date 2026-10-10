@@ -121,6 +121,7 @@ class Health(BaseModel):
     cache_entries: int
     jobs_in_flight: int
     database: str = Field(description="Dialect where runs are kept")
+    database_status: str = Field("ok", description='"ok" or "unavailable"')
 
 
 def strategy_catalog():

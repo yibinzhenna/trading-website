@@ -26,6 +26,7 @@ from fastapi import Depends, Header, HTTPException, Request
 
 from api import deps
 from api.auth import optional_user
+from api.store import StoreUnavailable
 
 
 # ── Admin ──────────────────────────────────────────────────────────────────
@@ -140,7 +141,13 @@ def _user_runs_today(user):
     """An account's backtests in the last 24 hours: saved runs plus anything
     still in memory (in flight, or finished but not yet written)."""
     since = datetime.now(timezone.utc) - DAY
-    seen = dict(deps.runs.owner_runs_since(user.id, since))
+    try:
+        seen = dict(deps.runs.owner_runs_since(user.id, since))
+    except StoreUnavailable:
+        # Fail open on the daily cap: backtests do not need the database,
+        # and the per-minute limit and global capacity cap still hold.
+        # Counting what is in memory keeps a floor under it.
+        seen = {}
     seen.update(deps.jobs.submitted_since(since.isoformat(timespec="milliseconds"),
                                           owner_id=user.id))
     return sorted(seen.values())

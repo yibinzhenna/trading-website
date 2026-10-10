@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
+from api.store import StoreUnavailable
 from api.auth import User, optional_user, require_user
 from api.security import (check_daily_limit, daily_gate, daily_usage,
                           enforce_submission_limits, require_admin)
@@ -38,10 +39,21 @@ from quantlab.strategies import StrategyError, compile_strategy
 
 @asynccontextmanager
 async def lifespan(_app):
+    # Schema setup in the background: startup must not wait on the database.
+    threading.Thread(target=deps.runs.warm, name="store-warm",
+                     daemon=True).start()
     yield
     deps.jobs.shutdown(wait=False)
     deps.research_jobs.shutdown(wait=False)
     deps.runs.close()
+
+
+def _optional(fn, *args):
+    """For informational extras: None while the database is down."""
+    try:
+        return fn(*args)
+    except StoreUnavailable:
+        return None
 
 
 app = FastAPI(
@@ -111,6 +123,16 @@ async def security_headers(request, call_next):
     return response
 
 
+@app.exception_handler(StoreUnavailable)
+async def store_unavailable(_request, _exc):
+    """Anything that needs saved data, while the database is unreachable."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "15"},
+        content={"detail": "Saved results are temporarily unavailable. "
+                           "New backtests still work; try again shortly."})
+
+
 # ── Metadata ───────────────────────────────────────────────────────────────
 
 @app.get("/health", response_model=schemas.Health, tags=["meta"])
@@ -122,6 +144,9 @@ def health():
         cache_entries=deps.cache.stats()["entries"],
         jobs_in_flight=in_flight,
         database=deps.runs.dialect,
+        # Reported, not enforced: a 503 here would make the host restart a
+        # server that is still serving backtests perfectly well.
+        database_status=deps.runs.health(),
     )
 
 
@@ -317,7 +342,7 @@ def me(user: User = Depends(require_user)):
             "rate_limit": deps.settings.user_rate_limit,
             "rate_window": deps.settings.rate_window,
             "backtests": daily_usage(user),
-            "research": _research_quota(user)}
+            "research": _optional(_research_quota, user)}
 
 
 @app.get("/me/runs", tags=["account"])
@@ -448,7 +473,12 @@ def get_research(job_id: str):
     """A session, live while it runs, then from the database. Readable by
     anyone holding the id, like a backtest link; the owner is not shown."""
     job = deps.research_jobs.get(job_id)
-    saved = deps.runs.research_get(job_id)
+    try:
+        saved = deps.runs.research_get(job_id)
+    except StoreUnavailable:
+        if job is None:
+            raise
+        saved = None          # a session in memory can still be shown
     if job is None and saved is None:
         raise HTTPException(404, f"No such research session: {job_id}")
     if job is not None and job.status not in ("done", "failed"):

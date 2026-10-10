@@ -16,14 +16,18 @@ The schema is created on startup. When it first changes (users, with auth),
 that is the point to bring in Alembic, not before.
 """
 
+import functools
 import json
 import logging
 import math
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, Integer,
                         MetaData, String, Table, Text, create_engine, delete,
                         func, insert, or_, select, update)
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 log = logging.getLogger("quantlab.store")
 
@@ -72,6 +76,33 @@ TABLES = ("runs", "research")
 IN_FLIGHT = ("queued", "running")
 
 
+# Give up on an unreachable database after this long, and then stop trying
+# for RETRY_AFTER seconds so every request does not wait out the timeout.
+CONNECT_TIMEOUT = 5
+RETRY_AFTER = 15
+_CONNECTIVITY = (OperationalError, InterfaceError)
+
+
+class StoreUnavailable(Exception):
+    """The database cannot be reached right now. Features that need saved
+    data fail with this; everything else — running backtests — carries on."""
+
+
+def _guarded(fn):
+    """Make the schema exist before first use, fail fast while the database
+    is known to be down, and turn connection failures into StoreUnavailable.
+    Other database errors are bugs and propagate unchanged."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        self._ensure()
+        try:
+            return fn(self, *args, **kwargs)
+        except _CONNECTIVITY as e:
+            self._trip(e)
+            raise StoreUnavailable("the database is unreachable") from e
+    return wrapper
+
+
 def normalise_url(url):
     """Point Postgres URLs at the psycopg 3 driver SQLAlchemy should use."""
     for prefix in ("postgres://", "postgresql://"):
@@ -113,6 +144,11 @@ class RunStore:
     """Finished backtests, keyed by job id."""
 
     def __init__(self, url, retention_days=30, prune_every=100):
+        """Does not touch the database. The schema is set up on first use, or
+        by `warm()` in the background at startup: a server must be able to
+        start, and serve backtests, while its database is down. It used to
+        connect here with no timeout, so an unreachable database held
+        startup for over two minutes and then crashed it."""
         url = normalise_url(url)
         # Strict on every dialect, so SQLite in tests rejects what Postgres
         # would reject in production instead of quietly storing `Infinity`.
@@ -121,20 +157,95 @@ class RunStore:
         if url.startswith("sqlite"):
             # Writes come from job threads, reads from request threads.
             kwargs["connect_args"] = {"check_same_thread": False}
-        elif ":6543/" in url:
-            # Supabase's transaction pooler hands each transaction to a
-            # different backend, so server-side prepared statements break.
-            # The session pooler (5432) is the right choice for a long-lived
-            # server; this only keeps the wrong one from failing obscurely.
-            kwargs["connect_args"] = {"prepare_threshold": None}
+        else:
+            kwargs["connect_args"] = {"connect_timeout": CONNECT_TIMEOUT}
+            if ":6543/" in url:
+                # Supabase's transaction pooler hands each transaction to a
+                # different backend, so server-side prepared statements
+                # break. The session pooler (5432) is the right choice for a
+                # long-lived server; this keeps the wrong one from failing
+                # obscurely.
+                kwargs["connect_args"]["prepare_threshold"] = None
         self.engine = create_engine(url, **kwargs)
         self.retention_days = retention_days
         self.prune_every = prune_every
         self._saves = 0
-        metadata.create_all(self.engine)
-        self._lock_down()
-        self.research_mark_interrupted()
-        self.prune()
+        self._ready = False
+        self._init_lock = threading.Lock()
+        self._down_until = 0.0
+        self._health = ("unknown", float("-inf"))
+        self._probing = threading.Lock()
+
+    # ── Availability ──────────────────────────────────────────────────────
+
+    def _ensure(self):
+        """Fast-fail while tripped; otherwise create the schema once."""
+        if time.monotonic() < self._down_until:
+            raise StoreUnavailable("the database is unreachable")
+        if self._ready:
+            return
+        with self._init_lock:
+            if self._ready:
+                return
+            # Another thread may have just failed while this one waited.
+            if time.monotonic() < self._down_until:
+                raise StoreUnavailable("the database is unreachable")
+            try:
+                metadata.create_all(self.engine)
+                self._lock_down()
+                RunStore.research_mark_interrupted.__wrapped__(self)
+                RunStore.prune.__wrapped__(self)
+            except _CONNECTIVITY as e:
+                self._trip(e)
+                raise StoreUnavailable("the database is unreachable") from e
+            self._ready = True
+            log.info("run store ready (%s)", self.dialect)
+
+    def _trip(self, error):
+        already = time.monotonic() < self._down_until
+        self._down_until = time.monotonic() + RETRY_AFTER
+        if not already:
+            log.warning("database unreachable; retrying in %ss: %s",
+                        RETRY_AFTER, str(error).splitlines()[0][:200])
+
+    def warm(self):
+        """Set up the schema now if possible. For a background thread at
+        startup; never raises."""
+        try:
+            self._ensure()
+        except StoreUnavailable:
+            pass
+
+    def health(self, max_age=10.0):
+        """The last known status — "ok", "unavailable" or "unknown" — returned
+        immediately. A stale status is refreshed in the background. A health
+        endpoint that waited on a connection timeout could itself time out,
+        and the host would restart a server still serving backtests."""
+        status, at = self._health
+        if time.monotonic() - at >= max_age and self._probing.acquire(blocking=False):
+            def probe():
+                try:
+                    self.check()
+                finally:
+                    self._probing.release()
+            threading.Thread(target=probe, name="store-probe", daemon=True).start()
+        return status
+
+    def check(self):
+        """Probe the database now and record the result. Blocks for up to
+        the connect timeout; for background use and tests."""
+        try:
+            self._ensure()
+            with self.engine.connect() as conn:
+                conn.exec_driver_sql("SELECT 1")
+            status = "ok"
+        except StoreUnavailable:
+            status = "unavailable"
+        except _CONNECTIVITY as e:
+            self._trip(e)
+            status = "unavailable"
+        self._health = (status, time.monotonic())
+        return status
 
     def _lock_down(self):
         """Close the table to Supabase's auto-generated REST API.
@@ -161,7 +272,8 @@ class RunStore:
     def dialect(self):
         return self.engine.dialect.name
 
-    def save(self, job):
+    @_guarded
+    def save(self, job, status=None):
         """Record a terminal job. Idempotent: saving twice keeps the first.
 
         The request comes from `job.meta["request"]`; the equity curves come
@@ -173,7 +285,8 @@ class RunStore:
         meta = {k: v for k, v in job.meta.items() if k != "traceback"}
         row = {
             "id": job.id,
-            "status": job.status,
+            # Passed in by the job store, which saves before it publishes.
+            "status": status or job.status,
             "symbol": meta.get("symbol", ""),
             "kind": meta.get("kind", ""),
             "bar_interval": meta.get("interval", "day"),
@@ -197,6 +310,7 @@ class RunStore:
         if self.prune_every and self._saves % self.prune_every == 0:
             self.prune()
 
+    @_guarded
     def get(self, run_id):
         """The run in the same shape as JobStore's `to_dict()`, or None."""
         with self.engine.connect() as conn:
@@ -220,6 +334,7 @@ class RunStore:
             out["result"] = row["result"]
         return out
 
+    @_guarded
     def owner_runs_since(self, owner_id, since):
         """(id, submitted_at ISO) of an owner's runs since `since`."""
         with self.engine.connect() as conn:
@@ -229,6 +344,7 @@ class RunStore:
                     runs.c.submitted_at >= since)).all()
         return [(r[0], _iso(r[1])) for r in rows]
 
+    @_guarded
     def list_for_owner(self, owner_id, limit=50):
         """A user's runs, newest first, summarised for a listing."""
         cols = (runs.c.id, runs.c.status, runs.c.symbol, runs.c.kind,
@@ -254,6 +370,7 @@ class RunStore:
             })
         return out
 
+    @_guarded
     def delete(self, run_id, owner_id):
         """Delete a run if, and only if, it belongs to `owner_id`."""
         with self.engine.begin() as conn:
@@ -261,15 +378,18 @@ class RunStore:
                 delete(runs).where(runs.c.id == run_id,
                                    runs.c.owner_id == owner_id)).rowcount > 0
 
+    @_guarded
     def series(self, run_id):
         with self.engine.connect() as conn:
             return conn.execute(
                 select(runs.c.series).where(runs.c.id == run_id)).scalar()
 
+    @_guarded
     def count(self):
         with self.engine.connect() as conn:
             return conn.execute(select(func.count()).select_from(runs)).scalar()
 
+    @_guarded
     def prune(self):
         """Delete runs past retention. Free Postgres tiers are a few hundred
         MB, and one run with its curves is tens of KB."""
@@ -290,6 +410,7 @@ class RunStore:
 
     # ── Research sessions ─────────────────────────────────────────────────
 
+    @_guarded
     def research_create(self, run_id, owner_id, symbol, goal, model):
         with self.engine.begin() as conn:
             conn.execute(insert(research).values(
@@ -297,6 +418,7 @@ class RunStore:
                 goal=goal, model=model, created_at=datetime.now(timezone.utc),
                 input_tokens=0, output_tokens=0))
 
+    @_guarded
     def research_finish(self, run_id, status, state=None, error=None):
         state = _finite(state) if state else None
         with self.engine.begin() as conn:
@@ -306,17 +428,20 @@ class RunStore:
                 input_tokens=(state or {}).get("input_tokens", 0),
                 output_tokens=(state or {}).get("output_tokens", 0)))
 
+    @_guarded
     def research_set_status(self, run_id, status):
         with self.engine.begin() as conn:
             conn.execute(update(research).where(research.c.id == run_id)
                          .values(status=status))
 
+    @_guarded
     def research_get(self, run_id):
         with self.engine.connect() as conn:
             row = conn.execute(select(research).where(
                 research.c.id == run_id)).mappings().first()
         return None if row is None else self._research_out(row)
 
+    @_guarded
     def research_list(self, owner_id, limit=20):
         with self.engine.connect() as conn:
             rows = conn.execute(
@@ -334,6 +459,7 @@ class RunStore:
                         "pick": final.get("kind")})
         return out
 
+    @_guarded
     def research_usage(self, since, owner_id=None):
         """Sessions that count against a quota since `since`.
 
@@ -348,12 +474,14 @@ class RunStore:
         with self.engine.connect() as conn:
             return conn.execute(q).scalar()
 
+    @_guarded
     def research_in_flight(self, owner_id):
         with self.engine.connect() as conn:
             return conn.execute(select(func.count()).select_from(research).where(
                 research.c.owner_id == owner_id,
                 research.c.status.in_(IN_FLIGHT))).scalar()
 
+    @_guarded
     def research_mark_interrupted(self):
         """Sessions run in this process. After a restart, any still marked in
         flight died with the old process; close them so they stop blocking

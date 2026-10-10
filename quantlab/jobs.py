@@ -91,7 +91,8 @@ class JobStore:
         self._pool = ThreadPoolExecutor(max_workers=workers,
                                         thread_name_prefix="job")
         self.max_jobs = max_jobs
-        # Called with each job once it is terminal, on the worker thread.
+        # Called as on_finish(job, status) on the worker thread once the job
+        # has its result or error, *before* its status turns terminal.
         # Persistence hooks in here; its failures are logged, never raised,
         # because a result that could not be saved is still a result.
         self.on_finish = on_finish
@@ -119,20 +120,22 @@ class JobStore:
             # The message is for the client; the traceback is for the log.
             job.error = f"{type(e).__name__}: {e}"
             job.meta["traceback"] = traceback.format_exc(limit=6)
-            job.finished_at = _now()
-            job.status = FAILED
+            status = FAILED
         else:
             job.result = result
-            job.finished_at = _now()
-            job.status = DONE
-        # `status` is written last on both paths, deliberately. Pollers key
-        # off it, so flipping it before result/error are populated lets a
-        # client observe a terminal job with missing fields.
+            status = DONE
+        job.finished_at = _now()
+        # Persist, then publish. Pollers key off `status`, so it is written
+        # last: once a client sees a terminal job, its fields are populated
+        # *and* its saved copy exists. Saving after the flip let a client
+        # read "done" from memory, then miss the run in a database listing
+        # (or read a stale "running" row) for as long as the save took.
         if self.on_finish is not None:
             try:
-                self.on_finish(job)
+                self.on_finish(job, status)
             except Exception:
                 log.exception("on_finish failed for job %s", job.id)
+        job.status = status
 
     def get(self, job_id):
         with self._lock:
