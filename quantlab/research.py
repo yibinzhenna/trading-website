@@ -21,92 +21,97 @@ So the loop is built around three rules:
 3. **Hard budgets.** A trial cap, a token budget per run, and a final turn
    that may only call `finish`. The loop cannot run away with the bill.
 
+Token economy
+-------------
+Every call is **stateless**: one user message holding a compact trial log,
+rather than a replayed conversation of tool calls and results. The model
+sees the same information — every configuration and its measurements — at
+a fraction of the tokens, and there is no prior turn whose reasoning would
+have to be passed back.
+
+Each call's message is the previous call's message plus new log lines,
+appended. System prompt and tools never vary, not even with the trial
+budget. Both properties matter to prefix caching (DeepSeek's is automatic
+and keyed on exact prefixes): almost all of every call after the first is a
+repeat.
+
 The model client is injected (anything with `messages.create(...)` shaped
-like the Anthropic SDK), so the loop is testable with a scripted fake.
+like the Anthropic SDK), so the loop is testable with a scripted fake. It
+serves both Anthropic and DeepSeek's Anthropic-compatible endpoint.
 """
 
-import json
 import re
 
 from . import engine
-from .strategies import DEFAULTS, KINDS, StrategyError, StrategySpec, \
-    compile_strategy
+from .strategies import DEFAULTS, KINDS, StrategySpec, compile_strategy
 
-DEFAULT_MODEL = "claude-haiku-5-5"
+MODELS = {"anthropic": "claude-haiku-5-5", "deepseek": "deepseek-flash"}
+DEFAULT_MODEL = MODELS["anthropic"]
 
-SYSTEM = """You are the research assistant in quantlab, a backtesting tool \
-whose purpose is telling real edges from fitted curves.
+# A tool call is ~70 tokens and finish notes ~150. Generous for that, tight
+# enough that a model which starts thinking out loud is cut short.
+MAX_OUTPUT_TOKENS = 600
+HYPOTHESIS_CHARS = 100
+NOTES_CHARS = 600
 
-You propose trading-strategy configurations one at a time with the \
-run_backtest tool. The engine runs each on the research window of the \
-data and returns its measurements. You never see the final part of the data: \
-it is a holdout, and your chosen trial will be judged on it exactly once.
+SYSTEM = """You are quantlab's strategy research assistant. Find a configuration that will hold up on data you cannot see.
 
-What generalises to unseen data:
-- Positive out-of-sample Sharpe *within* the research window, not just a \
-high overall Sharpe.
-- Consistency across walk-forward folds.
-- Beating buy-and-hold after costs.
-- Settings in a broad region that works, not a single sharp peak. Nudging a \
-parameter by one to chase a better number is fitting noise; avoid it.
-- Enough trades for the result to mean something.
+Each run_backtest call tests one configuration on the research window and adds a row to the trial log. When the log's trial budget is spent, call finish. Your pick is then tested once on a later holdout you never see; only that test decides PASS or FAIL.
 
-Use your trials to explore genuinely different ideas before refining one. \
-When you are done, or when told the budget is spent, call finish with the \
-trial number you trust most to hold up on unseen data, and brief notes on \
-why. Picking a trial that failed is allowed if nothing passed; say so.
+Row fields: S Sharpe; is/oos Sharpe on the window's first 70%/last 30%; xs % return over buy-and-hold; dd % max drawdown; n trades; pf profit factor; folds positive walk-forward folds; then PASS or the failed gates; overfit means is>0 but oos<=0.
 
-The notes are commentary, displayed beside the engine's measurements. Do not \
-state metric values in them (no Sharpe, return or drawdown figures): the \
-interface shows the measured numbers, and anything you write is not a \
-measurement. Refer to trials by number."""
+Prefer oos>0, most folds positive, xs>0, enough trades to be significant, and a broad working region of parameters over a sharp peak.
+
+Rules:
+1. Explore different kinds before refining one. Never repeat a logged configuration.
+2. Change parameters meaningfully; fast 10 to 11 only fits noise.
+3. hypothesis: at most 12 words.
+4. finish: the trial most likely to survive the holdout, even if it failed. notes: at most 3 sentences, trials by number, no metric values."""
 
 
-def tools(max_trials):
-    params_doc = "; ".join(
-        f"{k}: {', '.join(f'{p} (default {v})' for p, v in DEFAULTS[k].items())}"
+def _param_doc():
+    return "; ".join(
+        f"{k}: " + ", ".join(f"{p}={v}" for p, v in DEFAULTS[k].items())
         for k in KINDS)
-    return [
-        {
-            "name": "run_backtest",
-            "description": (
-                "Backtest one configuration on the research window and get "
-                f"its measurements. At most {max_trials} trials per session. "
-                f"Parameters by kind — {params_doc}. Omitted parameters use "
-                "the default."),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "kind": {"type": "string", "enum": list(KINDS)},
-                    "params": {
-                        "type": "object",
-                        "additionalProperties": {"type": "number"},
-                    },
-                    "hypothesis": {
-                        "type": "string",
-                        "description": "One sentence: what this trial tests.",
-                    },
-                },
-                "required": ["kind", "hypothesis"],
+
+
+TOOLS = [
+    {
+        "name": "run_backtest",
+        "description": (f"Test one configuration. Defaults: {_param_doc()}. "
+                        "Omitted parameters use the default. Example: "
+                        '{"kind":"breakout","params":{"lookback":40},'
+                        '"hypothesis":"Longer channels avoid false breaks"}'),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": list(KINDS)},
+                "params": {"type": "object",
+                           "additionalProperties": {"type": "number"}},
+                "hypothesis": {"type": "string"},
             },
+            "required": ["kind", "hypothesis"],
         },
-        {
-            "name": "finish",
-            "description": "End the session and nominate one trial for the "
-                           "holdout test.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "pick": {"type": "integer",
-                             "description": "Trial number to evaluate."},
-                    "notes": {"type": "string",
-                              "description": "Why this trial, qualitatively. "
-                                             "No metric values."},
-                },
-                "required": ["pick", "notes"],
+    },
+    {
+        "name": "finish",
+        "description": "Nominate one trial for the holdout test.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pick": {"type": "integer"},
+                "notes": {"type": "string"},
             },
+            "required": ["pick", "notes"],
         },
-    ]
+    },
+]
+
+
+def tools(_max_trials=None):
+    """The tool definitions. Identical for every session, so the cached
+    prefix is shared across sessions too; the budget lives in the log."""
+    return TOOLS
 
 
 # ── Keeping the model's prose honest ───────────────────────────────────────
@@ -121,7 +126,7 @@ _PATTERNS = [
 ]
 
 
-def scrub_metrics(text, limit=1200):
+def scrub_metrics(text, limit=NOTES_CHARS):
     """Remove metric figures from model prose.
 
     Instructed not to, a model will still sometimes write "a Sharpe of 1.4".
@@ -135,7 +140,11 @@ def scrub_metrics(text, limit=1200):
     return text
 
 
-# ── Measurements the model sees ────────────────────────────────────────────
+def _cap_words(text, words=12, chars=HYPOTHESIS_CHARS):
+    return " ".join((text or "").split()[:words])[:chars]
+
+
+# ── Measurements ───────────────────────────────────────────────────────────
 
 def _r(x, nd=2):
     return None if x is None or x != x or x in (float("inf"), float("-inf")) \
@@ -143,8 +152,8 @@ def _r(x, nd=2):
 
 
 def summarise(result):
-    """The compact view of a research-window backtest sent to the model and
-    shown in the trials table. Rounded: more digits invite fitting noise."""
+    """The structured view of a research-window backtest, kept in the
+    session state for the trials table and the fallback pick."""
     return {
         "passed": result["passed"],
         "failed_checks": [n for n, ok, _ in result["checks"] if not ok],
@@ -160,6 +169,47 @@ def summarise(result):
     }
 
 
+_GATE_SHORT = (("Sharpe", "sharpe"), ("Max drawdown", "drawdown"),
+               ("Profit factor", "pf"), ("Trades", "trades"),
+               ("Edge significant", "significance"), ("Beats", "benchmark"))
+
+
+def _gate(name):
+    return next((short for prefix, short in _GATE_SHORT
+                 if name.startswith(prefix)), name)
+
+
+def _num(v, nd=2, sign=False):
+    if v is None:
+        return "inf"
+    return f"{v:+.{nd}f}" if sign else f"{v:.{nd}f}"
+
+
+def row(trial, left):
+    """One trial as a log line: ~40 tokens where the JSON was ~100.
+
+    #3 trend_following fast=20 slow=60 | S 1.23 is 1.50 oos 0.81 xs +12.4
+    dd 6.1 n 9 pf 1.80 folds 3/4 | FAIL sharpe,trades | 3 left
+    """
+    def val(v):    # error rows can hold whatever the model sent
+        return f"{v:g}" if isinstance(v, (int, float)) and not isinstance(
+            v, bool) else repr(v)[:20]
+    params = " ".join(f"{k}={val(v)}" for k, v in (trial["params"] or {}).items())
+    head = f"#{trial['n']} {trial['kind']} {params}".rstrip()
+    m = trial.get("summary")
+    if not m:
+        return f"{head} | ERROR {trial['error']} | {left} left"
+    verdict = "PASS" if m["passed"] else \
+        "FAIL " + ",".join(_gate(n) for n in m["failed_checks"])
+    if m["likely_overfit"]:
+        verdict += " overfit"
+    return (f"{head} | S {_num(m['sharpe'])} is {_num(m['in_sample_sharpe'])} "
+            f"oos {_num(m['oos_sharpe'])} xs {_num(m['excess_return_pct'], 1, True)} "
+            f"dd {_num(m['max_drawdown_pct'], 1)} n {m['trades']} "
+            f"pf {_num(m['profit_factor'])} folds {m['folds_positive']} "
+            f"| {verdict} | {left} left")
+
+
 def _fallback_pick(trials):
     """If the model never nominates a valid trial, the engine picks: best
     research-window out-of-sample Sharpe, preferring trials that passed."""
@@ -170,19 +220,17 @@ def _fallback_pick(trials):
                                   t["summary"]["oos_sharpe"] or -1e9))["n"]
 
 
-class BudgetExceeded(Exception):
-    pass
-
-
 # ── The loop ───────────────────────────────────────────────────────────────
 
 def run_research(client, bars, symbol, goal="", *, model=DEFAULT_MODEL,
                  max_trials=6, token_budget=60_000, holdout_frac=0.3,
                  cash=1000.0, cost_model=None, criteria=None,
                  min_research_bars=60, min_holdout_bars=30,
-                 on_progress=None):
+                 request_options=None, on_progress=None):
     """Run a research session. Returns a dict; raises on unusable input.
 
+    `request_options` are passed to every `messages.create` call: how the
+    provider is asked not to think out loud, its temperature, and so on.
     `on_progress(state)` is called after every trial so a poller can watch
     the session unfold.
     """
@@ -201,68 +249,66 @@ def run_research(client, bars, symbol, goal="", *, model=DEFAULT_MODEL,
                             research[-1]["t"].date().isoformat()],
         "holdout_window": [holdout[0]["t"].date().isoformat(),
                            holdout[-1]["t"].date().isoformat()],
-        "trials": [], "input_tokens": 0, "output_tokens": 0,
-        "stop_reason": None,
+        "trials": [], "calls": 0, "input_tokens": 0, "output_tokens": 0,
+        "cache_read_tokens": 0, "thinking_blocks": 0, "stop_reason": None,
     }
 
     def progress():
         if on_progress:
             on_progress(state)
 
-    intro = (f"Symbol: {symbol}. Research window: {state['research_window'][0]}"
-             f" to {state['research_window'][1]} ({len(research)} daily bars). "
-             f"Costs: {cost_model.get('slippage_bps', 0)} bps slippage per side. "
-             f"You have {max_trials} trials.")
+    # Stable first, variable last: the header never changes within a
+    # session, and log lines are only ever appended after it.
+    log = [
+        f"Symbol {symbol}. Research window {state['research_window'][0]} to "
+        f"{state['research_window'][1]}, {len(research)} daily bars. Costs "
+        f"{cost_model.get('slippage_bps', 0)} bps slippage per side. Trial "
+        f"budget {max_trials}.",
+    ]
     if goal:
-        intro += f"\n\nThe user's goal, in their words: {goal[:300]}"
-    messages = [{"role": "user", "content": intro}]
-    tool_defs = tools(max_trials)
+        log.append(f"User's goal: {goal[:300]}")
+    log.append("Trial log:")
+    seen = {}
     pick, notes = None, ""
+    options = request_options or {}
 
-    for _turn in range(max_trials + 2):
+    for _call in range(max_trials + 2):
         spent = state["input_tokens"] + state["output_tokens"]
-        final_turn = (len(state["trials"]) >= max_trials
-                      or spent >= token_budget)
         if spent >= token_budget * 1.5:
             state["stop_reason"] = "token budget"
             break
+        final_turn = len(state["trials"]) >= max_trials or spent >= token_budget
+        if final_turn and log[-1] != "Budget spent: call finish.":
+            log.append("Budget spent: call finish.")
         choice = ({"type": "tool", "name": "finish"} if final_turn
                   else {"type": "any"})
 
         resp = client.messages.create(
-            model=model, max_tokens=1024, system=SYSTEM, tools=tool_defs,
-            tool_choice=choice, messages=messages)
-        state["input_tokens"] += resp.usage.input_tokens
-        state["output_tokens"] += resp.usage.output_tokens
-        messages.append({"role": "assistant", "content": resp.content})
+            model=model, max_tokens=MAX_OUTPUT_TOKENS, system=SYSTEM,
+            tools=TOOLS, tool_choice=choice,
+            messages=[{"role": "user", "content": "\n".join(log)}],
+            **options)
+        _account(state, resp)
 
         uses = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
         if not uses:
             state["stop_reason"] = "model stopped without a tool call"
             break
 
-        results, finished = [], False
+        finished = False
         for use in uses:
             if use.name == "finish":
                 finished = True
                 pick = use.input.get("pick")
                 notes = use.input.get("notes", "")
-                results.append(_tool_result(use.id, "Session finished."))
                 continue
             if len(state["trials"]) >= max_trials:
-                results.append(_tool_result(
-                    use.id, "Trial budget spent. Call finish.", error=True))
                 continue
             trial = _run_trial(len(state["trials"]) + 1, use.input, research,
-                               cash, cost_model, criteria)
+                               cash, cost_model, criteria, seen)
             state["trials"].append(trial)
-            body = trial["summary"] if trial.get("summary") else \
-                {"error": trial["error"]}
-            results.append(_tool_result(
-                use.id, json.dumps({"trial": trial["n"], **body}),
-                error="error" in trial))
+            log.append(row(trial, max_trials - len(state["trials"])))
             progress()
-        messages.append({"role": "user", "content": results})
         if finished:
             state["stop_reason"] = "model finished"
             break
@@ -287,43 +333,55 @@ def run_research(client, bars, symbol, goal="", *, model=DEFAULT_MODEL,
     return state
 
 
-def _tool_result(tool_use_id, content, error=False):
-    out = {"type": "tool_result", "tool_use_id": tool_use_id,
-           "content": content}
-    if error:
-        out["is_error"] = True
-    return out
+def _account(state, resp):
+    """Token accounting. Cache reads are counted inside input_tokens by the
+    budget (they are still tokens sent) and reported separately because
+    they are billed at a small fraction of the price."""
+    usage = resp.usage
+    state["calls"] += 1
+    state["input_tokens"] += usage.input_tokens
+    state["output_tokens"] += usage.output_tokens
+    state["cache_read_tokens"] += getattr(usage, "cache_read_input_tokens", 0) or 0
+    # Thinking was asked to be off. If a provider ignores that, this says so
+    # rather than leaving it to be inferred from a surprising bill.
+    state["thinking_blocks"] += sum(
+        1 for b in resp.content if getattr(b, "type", "") == "thinking")
 
 
-def _run_trial(n, raw, bars, cash, cost_model, criteria):
+def _run_trial(n, raw, bars, cash, cost_model, criteria, seen):
     """One proposal through the engine. Invalid proposals become an error
     the model can read and correct, not an exception."""
     from . import backtest
     kind = raw.get("kind")
     params = raw.get("params") or {}
     trial = {"n": n, "kind": kind, "params": params,
-             "hypothesis": (raw.get("hypothesis") or "")[:300]}
+             "hypothesis": _cap_words(raw.get("hypothesis"))}
     try:
         if kind not in KINDS:
-            raise StrategyError(f"unknown kind {kind!r}")
+            raise ValueError(f"unknown kind {kind!r}")
         unknown = set(params) - set(DEFAULTS[kind])
         if unknown:
-            raise StrategyError(f"unknown params for {kind}: {sorted(unknown)}")
+            raise ValueError(f"unknown params for {kind}: {sorted(unknown)}")
         if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
                    for v in params.values()):
-            raise StrategyError("parameter values must be numbers")
+            raise ValueError("parameter values must be numbers")
         if any(not 0 < v <= 1000 for v in params.values()):
-            raise StrategyError("parameter values must be between 0 and 1000")
+            raise ValueError("parameter values must be between 0 and 1000")
         spec = StrategySpec(kind=kind, params=params)
+        resolved = spec.resolved()
+        key = (kind, tuple(sorted(resolved.items())))
+        if key in seen:
+            raise ValueError(f"duplicate of #{seen[key]}")
         compile_strategy(spec)
         result = backtest(bars, spec, cash=cash, cost_model=cost_model,
                           criteria=criteria)
     except Exception as e:
         # Model input: whatever went wrong goes back to the model as a
         # readable error rather than ending the session.
-        trial["error"] = f"{type(e).__name__}: {e}"[:300]
+        trial["error"] = str(e)[:200]
         return trial
-    trial["params"] = StrategySpec(kind=kind, params=params).resolved()
+    seen[key] = n
+    trial["params"] = resolved
     trial["summary"] = summarise(result)
     return trial
 

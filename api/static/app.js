@@ -364,7 +364,8 @@ function renderResearch(s) {
     `Picked by ${who} from ${f.trials_tried} trials. Every trial searched the ` +
     `same research window, so the best of them is flattered by the search; ` +
     `the holdout result above is the one that counts. ` +
-    `${st.input_tokens + st.output_tokens} tokens used.`;
+    `${(st.input_tokens + st.output_tokens).toLocaleString()} tokens used` +
+    (st.cache_read_tokens ? `, ${st.cache_read_tokens.toLocaleString()} of them read from cache.` : ".");
   $("r-load").onclick = () => {
     fillForm({ symbol: s.symbol, kind: f.kind, params: f.params });
     $("form").scrollIntoView({ behavior: "smooth" });

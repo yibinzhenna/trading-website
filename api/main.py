@@ -379,8 +379,9 @@ def _run_research_job(job_id, client, bars, req, max_trials):
     try:
         return run_research(
             client, bars, req.symbol, req.goal,
-            model=deps.settings.research_model, max_trials=max_trials,
+            model=deps.research_model(), max_trials=max_trials,
             token_budget=deps.settings.research_token_budget,
+            request_options=deps.research_request_options(),
             on_progress=progress)
     except ValueError:
         raise
@@ -432,7 +433,7 @@ def start_research(req: schemas.ResearchRequest,
                 headers={"Retry-After": "60"})
         job_id = secrets.token_hex(8)
         deps.runs.research_create(job_id, user.id, req.symbol, req.goal,
-                                  s.research_model)
+                                  deps.research_model())
 
     deps.research_jobs.submit(
         "research", _run_research_job, job_id, deps.research_client, bars,

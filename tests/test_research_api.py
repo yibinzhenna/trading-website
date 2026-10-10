@@ -187,3 +187,44 @@ def test_restart_releases_a_stuck_session(tmp_path):
         deps.runs = deps._make_runs()                # process restart
         assert deps.runs.research_in_flight("alice") == 0
         assert c.get("/research/feedfacefeedface").json()["status"] == "failed"
+
+
+# ── Provider selection ─────────────────────────────────────────────────────
+
+def _settings(**kw):
+    s = deps.settings
+    for k, v in dict(anthropic_api_key="", deepseek_api_key="",
+                     research_provider="anthropic", research_model="").items():
+        setattr(s, k, v)
+    for k, v in kw.items():
+        setattr(s, k, v)
+
+
+def test_deepseek_key_selects_deepseek_endpoint_and_model():
+    _settings(deepseek_api_key="ds-test", research_provider="deepseek")
+    client = deps._make_research_client()
+    assert str(client.base_url).rstrip("/") == "https://api.deepseek.com/anthropic"
+    assert deps.research_model() == "deepseek-flash"
+    opts = deps.research_request_options()
+    assert opts == {"thinking": {"type": "disabled"},
+                    "extra_body": {"temperature": 0.3}}
+
+
+def test_anthropic_gets_no_temperature():
+    """The Anthropic SDK has no temperature argument; sending one in the
+    body would be an unknown field."""
+    _settings(anthropic_api_key="sk-test", research_provider="anthropic")
+    assert deps._make_research_client() is not None
+    assert deps.research_model() == "claude-haiku-5-5"
+    assert deps.research_request_options() == {"thinking": {"type": "disabled"}}
+
+
+def test_provider_without_its_key_is_off():
+    _settings(anthropic_api_key="sk-test", research_provider="deepseek")
+    assert deps._make_research_client() is None
+
+
+def test_model_override_wins():
+    _settings(deepseek_api_key="ds", research_provider="deepseek",
+              research_model="deepseek-v4-pro")
+    assert deps.research_model() == "deepseek-v4-pro"

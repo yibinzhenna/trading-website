@@ -229,9 +229,37 @@ The model's text is untrusted (it can echo a user's goal) and reaches the
 page only escaped. Nothing about the user — no email, no id — is sent to the
 model.
 
-To enable: set `ANTHROPIC_API_KEY`, with accounts enabled. Also set a monthly
-spend limit on that key in the Anthropic console: the caps above bound usage;
-the console bounds the bill.
+To enable: set `ANTHROPIC_API_KEY` or `DEEPSEEK_API_KEY`, with accounts
+enabled. Also set a monthly spend limit on that key in the provider's
+console: the caps above bound usage; the console bounds the bill.
+
+#### Token economy
+
+A six-trial session sends about 5,200 input tokens and receives about 400,
+down from about 14,000 when the loop replayed its conversation:
+
+- **Stateless calls.** Each call is one user message holding a compact trial
+  log, not a replay of earlier tool calls and results. The model sees every
+  configuration and its measurements; each row is about 45 tokens.
+- **Append-only, stable prefix.** Each call's message is the previous one
+  plus new rows, and the system prompt and tools never vary, so prefix
+  caching (automatic on DeepSeek) serves nearly every call after the first.
+  Finished sessions report how many tokens were read from cache.
+- **Thinking off.** DeepSeek enables reasoning by default at high effort;
+  it is disabled explicitly, and any thinking blocks a provider returns
+  anyway are counted in the session state. Output is capped at 600 tokens.
+- **Short prose.** Hypotheses are capped at 12 words; notes at 3 sentences.
+- **No wasted trials.** A configuration already in the log is refused
+  without running a backtest.
+
+#### DeepSeek
+
+DeepSeek is reached through its Anthropic-compatible endpoint
+(`https://api.deepseek.com/anthropic`), so it shares the client and the loop.
+With `DEEPSEEK_API_KEY` set it becomes the provider, using `deepseek-flash`
+at temperature 0.3. Its privacy policy states that data is processed in the
+People's Republic of China; users' research goals are sent to it, nothing
+else about them is.
 
 #### Setting up Supabase
 
@@ -382,7 +410,10 @@ proxies, or leave both unset to use the socket address.
 | `QUANTLAB_DAILY_LIMIT` | `50` | Backtests per visitor address per 24 hours; 0 = no cap |
 | `QUANTLAB_USER_DAILY_LIMIT` | `200` | Backtests per account per 24 hours; 0 = no cap |
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables AI research (accounts required too) |
-| `QUANTLAB_RESEARCH_MODEL` | `claude-haiku-5-5` | Model for research sessions |
+| `DEEPSEEK_API_KEY` | *(unset)* | Enables AI research on DeepSeek; takes priority |
+| `QUANTLAB_RESEARCH_PROVIDER` | *(auto)* | `anthropic` or `deepseek`; default follows the key set |
+| `QUANTLAB_RESEARCH_MODEL` | *(per provider)* | `claude-haiku-5-5` / `deepseek-flash` |
+| `QUANTLAB_RESEARCH_TEMPERATURE` | `0.3` | DeepSeek only |
 | `QUANTLAB_RESEARCH_DAILY_LIMIT` | `3` | Sessions per user per 24 hours |
 | `QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT` | `50` | Sessions per 24 hours, all users |
 | `QUANTLAB_RESEARCH_MAX_TRIALS` | `8` | Trials per session, upper bound |

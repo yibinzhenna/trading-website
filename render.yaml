@@ -60,6 +60,11 @@ services:
       # the console caps the bill.
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Or DeepSeek, through its Anthropic-compatible endpoint. With this
+      # key set, research uses DeepSeek (deepseek-flash) unless
+      # QUANTLAB_RESEARCH_PROVIDER says otherwise.
+      - key: DEEPSEEK_API_KEY
+        sync: false
       - key: QUANTLAB_RESEARCH_DAILY_LIMIT
         value: "3"
       - key: QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT

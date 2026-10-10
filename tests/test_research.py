@@ -111,10 +111,106 @@ def test_bad_proposals_come_back_as_errors_not_crashes():
     # Trial 1 was an error, so the model's pick is invalid: engine picks.
     assert out["picked_by"] == "engine fallback"
     assert out["final"]["trial"] == 6
-    # The model was told what went wrong, flagged as an error.
-    # [0] intro, [1] first proposal, [2] its result.
-    results = client.requests[-1]["messages"][2]["content"]
-    assert results[0]["is_error"] and "astrology" in results[0]["content"]
+    # The model was told what went wrong, in the log it reads.
+    log = client.requests[-1]["messages"][0]["content"]
+    assert "#1 astrology | ERROR unknown kind 'astrology'" in log
+    assert "#5 breakout lookback='20' | ERROR" in log
+
+
+# ── Token economy ──────────────────────────────────────────────────────────
+
+SIX = [call("run_backtest", kind=k, params=p, hypothesis="h") for k, p in [
+    ("trend_following", {"fast": 10, "slow": 30}), ("breakout", {"lookback": 20}),
+    ("momentum", {}), ("volatility", {}), ("trend_following", {"fast": 20, "slow": 60}),
+    ("mean_reversion", {})]] + [call("finish", pick=1, notes="n")]
+
+
+def test_every_call_is_one_stateless_message():
+    """No replayed tool calls: nothing a provider could demand back."""
+    client, _ = research(list(SIX))
+    for req in client.requests:
+        assert len(req["messages"]) == 1
+        assert req["messages"][0]["role"] == "user"
+        assert isinstance(req["messages"][0]["content"], str)
+
+
+def test_each_message_extends_the_last_one():
+    """Append-only, so each call's message is a prefix-cache hit on the
+    previous one."""
+    client, _ = research(list(SIX))
+    msgs = [r["messages"][0]["content"] for r in client.requests]
+    for before, after in zip(msgs, msgs[1:]):
+        assert after.startswith(before) and len(after) > len(before)
+
+
+def test_system_and_tools_are_identical_across_sessions():
+    """Different symbol, goal and budget: same cached prefix."""
+    a = FakeClient([call("finish", pick=1, notes="x")])
+    b = FakeClient([call("finish", pick=1, notes="x")])
+    run_research(a, BARS, "DEMO-REGIME", max_trials=3)
+    run_research(b, BARS[:400], "OTHER", goal="anything", max_trials=8)
+    for key in ("system", "tools"):
+        assert a.requests[0][key] == b.requests[0][key]
+
+
+def test_log_rows_are_compact():
+    client, out = research(list(SIX))
+    log = client.requests[-1]["messages"][0]["content"]
+    rows = [line for line in log.splitlines() if line.startswith("#")]
+    assert len(rows) == 6
+    assert all(len(r) < 220 for r in rows), rows   # ~60 tokens at most
+    assert rows[0].startswith("#1 trend_following fast=10 slow=30 | S ")
+    assert rows[0].endswith("| 5 left")
+    # The model's own hypotheses stay out of what it is sent back.
+    assert "hypothesis" not in log and "\nh\n" not in log
+
+
+def test_session_size_stays_small():
+    """A guard against the prompt quietly growing back. 3.6 characters per
+    token is a fair average for this mix of English and figures."""
+    client, _ = research(list(SIX))
+    sent = sum(len(r["system"]) + len(str(r["tools"]))
+               + len(r["messages"][0]["content"]) for r in client.requests)
+    assert sent / 3.6 < 6000, f"~{sent / 3.6:.0f} input tokens per session"
+
+
+def test_request_options_reach_every_call():
+    opts = {"thinking": {"type": "disabled"}, "extra_body": {"temperature": 0.3}}
+    client = FakeClient(list(SIX))
+    run_research(client, BARS, "DEMO-REGIME", request_options=opts)
+    assert all(r["thinking"] == {"type": "disabled"} for r in client.requests)
+    assert all(r["extra_body"] == {"temperature": 0.3} for r in client.requests)
+    assert all(r["max_tokens"] <= 600 for r in client.requests)
+
+
+def test_thinking_blocks_are_counted_if_a_provider_ignores_the_request():
+    class Thinker(FakeClient):
+        def create(self, **kw):
+            resp = super().create(**kw)
+            resp.content.insert(0, SimpleNamespace(type="thinking", thinking="hmm"))
+            return resp
+
+    out = run_research(Thinker(list(SIX)), BARS, "DEMO-REGIME")
+    assert out["thinking_blocks"] == out["calls"] == 7
+
+
+def test_duplicate_configuration_is_refused_without_a_backtest():
+    client, out = research([
+        TREND,
+        call("run_backtest", kind="trend_following", params={"slow": 30, "fast": 10},
+             hypothesis="again"),
+        call("run_backtest", kind="trend_following", params={}, hypothesis="defaults"),
+        call("finish", pick=1, notes="x")])
+    assert out["trials"][1]["error"] == "duplicate of #1"
+    # {} resolves to the defaults fast=10 slow=30: also a duplicate.
+    assert out["trials"][2]["error"] == "duplicate of #1"
+
+
+def test_hypothesis_is_capped_at_twelve_words():
+    client, out = research([call("run_backtest", kind="breakout",
+                                 params={}, hypothesis="word " * 40),
+                            call("finish", pick=1, notes="x")])
+    assert len(out["trials"][0]["hypothesis"].split()) == 12
 
 
 def test_engine_picks_when_the_model_never_finishes():

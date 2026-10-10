@@ -10,7 +10,7 @@ import os
 
 from api.store import RunStore
 from quantlab.cache import BarCache, CachedProvider
-from quantlab.research import DEFAULT_MODEL
+from quantlab.research import MODELS
 from quantlab.jobs import JobStore
 from quantlab.providers import ProviderError, get_provider
 
@@ -69,7 +69,19 @@ class Settings:
         # AI research. Needs an Anthropic key *and* accounts: sessions cost
         # money, so they are tied to a signed-in user with a daily quota.
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        self.research_model = os.getenv("QUANTLAB_RESEARCH_MODEL", DEFAULT_MODEL)
+        self.deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        # Who runs AI research: "anthropic" or "deepseek". Unset: DeepSeek
+        # if its key is present, otherwise Anthropic.
+        self.research_provider = (
+            os.getenv("QUANTLAB_RESEARCH_PROVIDER")
+            or ("deepseek" if self.deepseek_api_key else "anthropic")).lower()
+        # Empty = the provider's default (see quantlab.research.MODELS).
+        self.research_model = os.getenv("QUANTLAB_RESEARCH_MODEL", "")
+        # DeepSeek only; the Anthropic SDK takes no temperature. Low keeps
+        # proposals and tool calls consistent; zero would make a model that
+        # repeats itself repeat itself exactly.
+        self.research_temperature = float(
+            os.getenv("QUANTLAB_RESEARCH_TEMPERATURE", 0.3))
         self.research_daily_limit = int(
             os.getenv("QUANTLAB_RESEARCH_DAILY_LIMIT", 3))
         # Across all users: the ceiling on what one day can cost.
@@ -105,13 +117,44 @@ def _persist_research(job):
         runs.research_finish(job.id, "failed", state, job.error)
 
 
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
+
+
 def _make_research_client():
-    """An Anthropic client, or None when research is not configured."""
-    if not settings.anthropic_api_key:
+    """A Messages-API client for the configured provider, or None when
+    research is not configured. DeepSeek is reached through its
+    Anthropic-compatible endpoint, so one client and one code path serve
+    both."""
+    provider = settings.research_provider
+    key = {"anthropic": settings.anthropic_api_key,
+           "deepseek": settings.deepseek_api_key}.get(provider)
+    if not key:
         return None
     import anthropic
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key,
-                               max_retries=2, timeout=60.0)
+    kwargs = {"api_key": key, "max_retries": 2, "timeout": 60.0}
+    if provider == "deepseek":
+        kwargs["base_url"] = DEEPSEEK_BASE_URL
+    return anthropic.Anthropic(**kwargs)
+
+
+def research_model():
+    return settings.research_model or MODELS.get(settings.research_provider, "")
+
+
+def research_request_options():
+    """Per-call options, tuned per provider.
+
+    Thinking is switched off explicitly. DeepSeek turns it on by default at
+    high effort: thousands of output tokens per call spent reasoning about
+    which moving-average lengths to try, and with tools present its API
+    demands that reasoning be passed back on later turns. The loop's calls
+    are stateless, so nothing would break if a provider ignored this — the
+    session state counts any thinking blocks that come back.
+    """
+    options = {"thinking": {"type": "disabled"}}
+    if settings.research_provider == "deepseek":
+        options["extra_body"] = {"temperature": settings.research_temperature}
+    return options
 
 
 def research_enabled():
