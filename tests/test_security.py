@@ -304,3 +304,41 @@ def test_docs_can_be_enabled_for_development():
     out = subprocess.run([sys.executable, "-c", code], env=env,
                          capture_output=True, text=True, timeout=120)
     assert out.stdout.strip().endswith("200"), out.stderr[-500:]
+
+
+# ── IPv6 networks, not addresses (patch C) ─────────────────────────────────
+
+def test_rotating_ipv6_addresses_share_one_limit(tmp_path):
+    """One connection owns a /64 and can use a new address per request.
+    Counting full addresses gave each a fresh allowance."""
+    with make_client(tmp_path, rate_limit=3,
+                     client_ip_header="cf-connecting-ip") as c:
+        codes = [c.post("/backtest", json=BODY, headers={
+            "CF-Connecting-IP": f"2001:db8:1234:5678::{i:x}"}).status_code
+            for i in range(1, 6)]
+    assert codes == [202, 202, 202, 429, 429]
+
+
+def test_different_ipv6_networks_are_separate(tmp_path):
+    with make_client(tmp_path, rate_limit=1,
+                     client_ip_header="cf-connecting-ip") as c:
+        a = c.post("/backtest", json=BODY,
+                   headers={"CF-Connecting-IP": "2001:db8:aaaa:1::1"}).status_code
+        b = c.post("/backtest", json=BODY,
+                   headers={"CF-Connecting-IP": "2001:db8:bbbb:1::1"}).status_code
+    assert a == b == 202
+
+
+def test_ipv4_mapped_ipv6_is_the_ipv4_address(tmp_path):
+    deps.reset_for_tests(client_ip_header="cf-connecting-ip",
+                         trust_proxy_hops=0, cache_root=str(tmp_path))
+    assert client_key(request_with(cf="::ffff:203.0.113.9")) == "203.0.113.9"
+
+
+def test_visitor_pseudonym_covers_the_whole_network(tmp_path):
+    from api.security import visitor_id
+    deps.reset_for_tests(client_ip_header="cf-connecting-ip",
+                         trust_proxy_hops=0, cache_root=str(tmp_path))
+    deps.settings.visitor_key = "k"
+    ids = {visitor_id(request_with(cf=f"2001:db8:1:2::{i}")) for i in range(1, 50)}
+    assert len(ids) == 1

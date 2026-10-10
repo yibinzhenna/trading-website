@@ -17,6 +17,7 @@ means you submitted it or were handed it — a capability, not a guessable key.
 """
 
 import hmac
+import ipaddress
 import threading
 import time
 from collections import deque
@@ -50,8 +51,28 @@ def require_admin(authorization: str | None = Header(None)):
 
 # ── Client identity ────────────────────────────────────────────────────────
 
+def network_key(address):
+    """The unit a limit should count: an IPv4 address, or an IPv6 /64.
+
+    One IPv6 connection is normally given a whole /64 — 2^64 addresses — and
+    can use a different one per request. Counting full IPv6 addresses gave
+    each a fresh allowance, so every per-address limit was bypassable by
+    anyone on IPv6. IPv4-mapped IPv6 (::ffff:a.b.c.d) is the IPv4 address it
+    wraps. Anything unparseable is returned unchanged.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 6:
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
 def client_key(request: Request):
-    """Best available identity for the caller, for rate limiting only.
+    """The caller's network (see `network_key`), for rate limiting only.
 
     In order of preference:
 
@@ -72,6 +93,10 @@ def client_key(request: Request):
     against the live deploy, where hops=1 let 22 consecutive requests through
     a limit of 20.
     """
+    return network_key(_client_address(request))
+
+
+def _client_address(request):
     header = deps.settings.client_ip_header
     if header:
         value = request.headers.get(header, "").strip()
