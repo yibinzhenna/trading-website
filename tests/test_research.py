@@ -314,3 +314,25 @@ def test_planted_edge_can_now_pass_research():
 def test_wrong_pick_still_fails_research():
     client, out = research([REVERT, call("finish", pick=1, notes="dip buying")])
     assert out["final"]["verdict"] == "fail"
+
+
+# ── Scrubbing keeps references intact (issue #11) ──────────────────────────
+
+def test_fold_counts_survive_next_to_a_metric_word():
+    """The live session read "positive out-of-sample [see table]/4 folds"."""
+    text = ("Trials 1, 2, 4, 5 and 6 all passed with positive out-of-sample "
+            "Sharpe across 4/4 folds; trial 3 failed badly.")
+    assert scrub_metrics(text) == text
+
+
+@pytest.mark.parametrize("text,kept,gone", [
+    ("Sharpe stayed above 1.5 in trial 2 across 3/4 folds.",
+     ["trial 2", "3/4 folds"], ["1.5"]),
+    ("#4 beat #2 with a sharpe ratio of 2.1.", ["#4", "#2"], ["2.1"]),
+    ("The trial 12 return of 40 beat trial 3.", ["trial 12", "trial 3"], ["40"]),
+    ("Trials 2 and 5 returned 30% over 4/4 folds.", ["Trials 2 and 5", "4/4 folds"], ["30%"]),
+])
+def test_references_kept_metrics_removed(text, kept, gone):
+    out = scrub_metrics(text)
+    assert all(k in out for k in kept), out
+    assert not any(g in out for g in gone), out

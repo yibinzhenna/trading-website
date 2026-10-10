@@ -126,17 +126,38 @@ _PATTERNS = [
 ]
 
 
+# Numbers that are references, not results: fold counts ("4/4 folds") and
+# trial numbers ("Trials 1, 2 and 6", "#3"). Shielded before scrubbing, or a
+# metric pattern's look-ahead swallows them: "Sharpe across 4/4 folds" came
+# out as "[see table]/4 folds".
+_PROTECTED = re.compile(
+    r"\b\d+\s*/\s*\d+\s*folds?\b"
+    r"|\btrials?\s+\d+(?:\s*(?:,|and|&|or)\s*\d+)*"
+    r"|#\d+",
+    re.IGNORECASE)
+_SHIELD = 0xE000          # Unicode private use: never in model prose
+
+
 def scrub_metrics(text, limit=NOTES_CHARS):
     """Remove metric figures from model prose.
 
     Instructed not to, a model will still sometimes write "a Sharpe of 1.4".
     That number would sit on the page looking like a measurement. The UI
-    shows the engine's numbers; prose keeps parameter values ("fast 10")
-    but loses anything that reads as a result.
+    shows the engine's numbers; prose keeps parameter values ("fast 10"),
+    trial numbers and fold counts, but loses anything that reads as a result.
     """
     text = (text or "")[:limit]
+    shielded = []
+
+    def shield(m):
+        shielded.append(m.group(0))
+        return chr(_SHIELD + len(shielded) - 1)
+
+    text = _PROTECTED.sub(shield, text)
     for pat in _PATTERNS:
         text = pat.sub("[see table]", text)
+    for i, original in enumerate(shielded):
+        text = text.replace(chr(_SHIELD + i), original)
     return text
 
 
