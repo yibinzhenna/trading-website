@@ -369,6 +369,12 @@ platforms as built, and that is not a configuration gap:
 Render, Railway and Fly all run a real process and work unchanged. A
 `Procfile`, `requirements.txt` and `render.yaml` are included.
 
+`requirements.txt` is a lock file: every package, direct or transitive, at
+an exact version with its hashes, so a deploy installs exactly what was
+tested and pip refuses anything that does not match byte for byte. It is
+generated from `requirements.in` (instructions inside), keeping every
+package to releases at least two weeks old.
+
 ```bash
 # whatever the host runs reduces to this
 uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1

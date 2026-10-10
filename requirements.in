@@ -1,0 +1,17 @@
+# Direct runtime dependencies. requirements.txt is the hashed lock file
+# generated from this — edit here, then regenerate with:
+#
+#   python -m uv pip compile requirements.in --universal --python-version 3.12 \
+#       --generate-hashes --exclude-newer <date two weeks ago> -o requirements.txt
+#
+# --exclude-newer keeps every package, direct or not, to releases at least
+# two weeks old: a malicious release is usually caught and pulled within
+# days, so not taking day-old versions is most of the protection.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
+pyjwt[crypto]>=2.8
+# The research loop was tested against this exact SDK.
+anthropic==1.8.0
