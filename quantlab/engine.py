@@ -152,7 +152,7 @@ def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day",
     slip_bps = float(cost.get("slippage_bps", 0.0))
 
     equity, trades, rets = [cash], [], []
-    shares, entry_px, entry_cost = 0.0, 0.0, 0.0
+    shares, entry_cost = 0.0, 0.0
 
     for i in range(len(bars) - 1):
         price = bars[i + 1]["o"]          # fill at next open
@@ -163,13 +163,13 @@ def run(bars, signal_fn, cash=1000.0, cost_model=None, interval="day",
             spend = equity[-1] - per_trade
             if spend > 0 and fill > 0:
                 shares = spend / fill
-                entry_px, entry_cost = fill, spend + per_trade
+                entry_cost = spend + per_trade
         elif action == "SELL" and shares > 0:
             fill = price * (1 - slip_bps / 10000.0)
             proceeds = shares * fill - per_trade
             trades.append(proceeds - entry_cost)
             rets.append((proceeds - entry_cost) / entry_cost if entry_cost else 0.0)
-            shares, entry_px, entry_cost = 0.0, 0.0, 0.0
+            shares, entry_cost = 0.0, 0.0
             equity.append(proceeds)
             continue
 
