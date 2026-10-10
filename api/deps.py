@@ -103,6 +103,11 @@ class Settings:
         self.research_token_budget = int(
             os.getenv("QUANTLAB_RESEARCH_TOKEN_BUDGET", 60_000))
         self.research_max_queue = int(os.getenv("QUANTLAB_RESEARCH_MAX_QUEUE", 3))
+        # Sessions per network (IPv4 address or IPv6 /64) per 24 hours, across
+        # every account using it. Above the per-account quota so a shared
+        # office or campus is not starved; 0 turns it off.
+        self.research_network_daily_limit = int(
+            os.getenv("QUANTLAB_RESEARCH_NETWORK_DAILY_LIMIT", 6))
         self.cors_origins = [o.strip() for o in
                              os.getenv("QUANTLAB_CORS_ORIGINS", "").split(",")
                              if o.strip()]
@@ -202,6 +207,16 @@ def _make_daily_limiter():
 limiter = _make_limiter()
 user_limiter = _make_limiter(settings.user_rate_limit)
 daily_limiter = _make_daily_limiter()
+
+
+def _make_research_network_limiter():
+    """Fallback for the per-network research cap when there is no key to
+    pseudonymise networks with: in memory, so it resets on restart."""
+    from api.security import RateLimiter
+    return RateLimiter(max(1, settings.research_network_daily_limit), 24 * 60 * 60)
+
+
+research_network_limiter = _make_research_network_limiter()
 verifier = _make_verifier()
 
 _PROVIDER_KWARGS = {"local": lambda s: {"root": s.data_root}}
@@ -240,7 +255,7 @@ def reset_for_tests(**overrides):
     new futures after shutdown" the moment it submitted anything.
     """
     global cache, jobs, limiter, runs, user_limiter, verifier, daily_limiter, \
-        research_jobs, research_client
+        research_jobs, research_client, research_network_limiter
     for k, v in overrides.items():
         setattr(settings, k, v)
     cache = BarCache(settings.cache_root, settings.cache_ttl)
@@ -257,6 +272,7 @@ def reset_for_tests(**overrides):
     limiter = _make_limiter()
     user_limiter = _make_limiter(settings.user_rate_limit)
     daily_limiter = _make_daily_limiter()
+    research_network_limiter = _make_research_network_limiter()
     verifier = _make_verifier()
     _providers.clear()
     return cache

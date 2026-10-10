@@ -254,7 +254,11 @@ round (`quantlab/research.py`):
 Costs are bounded before anything is spent: sign-in required, a daily
 quota per *inbox* — accounts whose emails differ only by `+tags`, or for
 Gmail by dots or `googlemail.com`, share one allowance; the canonical email
-is stored only as a keyed hash (`api/identity.py`) — the per-user daily quota (`QUANTLAB_RESEARCH_DAILY_LIMIT`, default 3), a site-wide daily
+is stored only as a keyed hash (`api/identity.py`) — a cap per network
+across every account on it (`QUANTLAB_RESEARCH_NETWORK_DAILY_LIMIT`, 6;
+IPv4 address or IPv6 /64, also stored only as a keyed hash), refusal of
+known throwaway email domains (`api/disposable_domains.txt`), the per-user
+daily quota (`QUANTLAB_RESEARCH_DAILY_LIMIT`, default 3), a site-wide daily
 ceiling (`QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT`, 50), one session per user
 at a time, a short queue, a trial cap, a token budget per session, and a
 final turn that may only call `finish`. A session that fails before using
@@ -458,6 +462,7 @@ proxies, or leave both unset to use the socket address.
 | `QUANTLAB_RESEARCH_MAX_TRIALS` | `8` | Trials per session, upper bound |
 | `QUANTLAB_RESEARCH_TOKEN_BUDGET` | `60000` | Tokens per session before `finish` is forced |
 | `QUANTLAB_RESEARCH_MAX_QUEUE` | `3` | Sessions queued or running at once |
+| `QUANTLAB_RESEARCH_NETWORK_DAILY_LIMIT` | `6` | Sessions per network per 24 hours, all accounts; 0 = off |
 | `QUANTLAB_CORS_ORIGINS` | *(unset)* | Extra browser origins allowed to call the API |
 
 ## Known issues

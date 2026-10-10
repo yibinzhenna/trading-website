@@ -32,7 +32,8 @@ from api.identity import identity_key, is_disposable
 from api.limits import BodySizeLimit
 from api.store import StoreUnavailable
 from api.auth import User, optional_user, require_user
-from api.security import (check_daily_limit, daily_usage, submission_lock,
+from api.security import (check_daily_limit, client_key, daily_usage,
+                          submission_lock, visitor_id,
                           enforce_submission_limits, require_admin)
 from quantlab import StrategySpec, __version__, backtest, engine
 from quantlab.providers import ProviderError
@@ -427,6 +428,31 @@ def _research_quota(user):
     return {"used": used, "limit": limit, "remaining": max(0, limit - used)}
 
 
+def _check_research_network(request):
+    """Per-network cap across all accounts. Returns the network pseudonym to
+    record with the session, or None when counting in memory instead.
+    Called last, under the research gate, so only a session that is about
+    to start uses up the in-memory fallback."""
+    limit = deps.settings.research_network_daily_limit
+    if not limit:
+        return None
+    network = visitor_id(request)
+    if network is not None:
+        if deps.runs.research_network_usage(network, _day_ago()) >= limit:
+            raise HTTPException(
+                429, f"This network has reached today's AI research limit "
+                     f"({limit} sessions per 24 hours across all accounts).",
+                headers={"Retry-After": "3600"})
+        return network
+    allowed, retry = deps.research_network_limiter.check(client_key(request))
+    if not allowed:
+        raise HTTPException(
+            429, f"This network has reached today's AI research limit "
+                 f"({limit} sessions per 24 hours across all accounts).",
+            headers={"Retry-After": str(retry)})
+    return None
+
+
 def _require_research():
     if deps.research_client is None:
         raise HTTPException(503, "AI research is not enabled on this server")
@@ -462,7 +488,7 @@ def _run_research_job(job_id, client, bars, req, max_trials):
 
 
 @app.post("/research", status_code=202, tags=["research"])
-def start_research(req: schemas.ResearchRequest,
+def start_research(req: schemas.ResearchRequest, request: Request,
                    user: User = Depends(require_user)):
     """Start an AI research session on a symbol. Poll GET /research/{id}."""
     _require_research()
@@ -503,10 +529,11 @@ def start_research(req: schemas.ResearchRequest,
             raise HTTPException(
                 429, "The research queue is full. Try again in a few minutes.",
                 headers={"Retry-After": "60"})
+        network = _check_research_network(request)
         job_id = secrets.token_hex(8)
         deps.runs.research_create(job_id, user.id, req.symbol, req.goal,
                                   deps.research_model(),
-                                  identity=identity_key(user))
+                                  identity=identity_key(user), network=network)
 
     deps.research_jobs.submit(
         "research", _run_research_job, job_id, deps.research_client, bars,

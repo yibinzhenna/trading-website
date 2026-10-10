@@ -91,7 +91,18 @@ research_identities = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, index=True),
 )
 
-TABLES = ("runs", "research", "visitor_usage", "research_identities")
+# The network (pseudonymised IPv4 address or IPv6 /64, see
+# api.security.visitor_id) each research session came from, for a cap that
+# holds however many accounts one connection uses.
+research_networks = Table(
+    "research_networks", metadata,
+    Column("id", String(32), primary_key=True),       # research session id
+    Column("network", String(64), nullable=False, index=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, index=True),
+)
+
+TABLES = ("runs", "research", "visitor_usage", "research_identities",
+          "research_networks")
 IN_FLIGHT = ("queued", "running")
 
 
@@ -434,6 +445,8 @@ class RunStore:
             # Only the 24-hour quota window reads these; keep a day's margin.
             conn.execute(delete(research_identities).where(
                 research_identities.c.created_at < now - timedelta(days=2)))
+            conn.execute(delete(research_networks).where(
+                research_networks.c.created_at < now - timedelta(days=2)))
         if not self.retention_days:
             return 0
         cutoff = now - timedelta(days=self.retention_days)
@@ -472,7 +485,7 @@ class RunStore:
 
     @_guarded
     def research_create(self, run_id, owner_id, symbol, goal, model,
-                        identity=None):
+                        identity=None, network=None):
         now = datetime.now(timezone.utc)
         with self.engine.begin() as conn:
             conn.execute(insert(research).values(
@@ -482,6 +495,22 @@ class RunStore:
             if identity:
                 conn.execute(insert(research_identities).values(
                     id=run_id, identity=identity, created_at=now))
+            if network:
+                conn.execute(insert(research_networks).values(
+                    id=run_id, network=network, created_at=now))
+
+    @_guarded
+    def research_network_usage(self, network, since):
+        """Sessions charged to a network since `since`, across accounts."""
+        q = (select(func.count()).select_from(
+                research_networks.join(
+                    research, research.c.id == research_networks.c.id))
+             .where(research_networks.c.network == network,
+                    research_networks.c.created_at >= since,
+                    or_(research.c.status != "failed",
+                        research.c.input_tokens > 0)))
+        with self.engine.connect() as conn:
+            return conn.execute(q).scalar()
 
     @_guarded
     def research_identity_usage(self, identity, since):

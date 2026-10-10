@@ -74,5 +74,8 @@ services:
         value: "3"
       - key: QUANTLAB_RESEARCH_GLOBAL_DAILY_LIMIT
         value: "50"
+      # Across every account on one network (IPv4 address or IPv6 /64).
+      - key: QUANTLAB_RESEARCH_NETWORK_DAILY_LIMIT
+        value: "6"
       - key: QUANTLAB_RUN_RETENTION_DAYS
         value: "30"

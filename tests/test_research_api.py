@@ -309,3 +309,75 @@ def test_blocklist_ships_with_the_app():
     """A missing file would quietly disable the check (it fails open)."""
     from api.identity import _BLOCKLIST, _disposable_domains
     assert _BLOCKLIST.is_file() and len(_disposable_domains()) >= 40
+
+
+# ── One network, one cap across accounts (layer 3) ─────────────────────────
+
+def account(n):
+    return bearer(token(f"net{n}", email=f"person{n}@example.com"))
+
+
+def net(ip):
+    return {"CF-Connecting-IP": ip}
+
+
+def start_from(c, who, ip):
+    deps.research_client = FakeClient(list(SCRIPT))
+    return c.post("/research", json=BODY, headers={**who, **net(ip)})
+
+
+def test_many_accounts_on_one_network_share_a_cap(tmp_path):
+    with make_client(tmp_path, research_network_daily_limit=2,
+                     visitor_key="k", client_ip_header="cf-connecting-ip") as c:
+        codes = []
+        for n in range(3):
+            r = start_from(c, account(n), "203.0.113.7")
+            codes.append(r.status_code)
+            if r.status_code == 202:
+                deps.research_jobs.wait(r.json()["job_id"], timeout=60)
+        elsewhere = start_from(c, account(9), "198.51.100.1")
+    assert codes == [202, 202, 429]
+    assert elsewhere.status_code == 202
+
+
+def test_rotating_ipv6_is_one_network(tmp_path):
+    with make_client(tmp_path, research_network_daily_limit=1,
+                     visitor_key="k", client_ip_header="cf-connecting-ip") as c:
+        first = start_from(c, account(1), "2001:db8:9:9::1")
+        deps.research_jobs.wait(first.json()["job_id"], timeout=60)
+        second = start_from(c, account(2), "2001:db8:9:9::abcd")
+    assert second.status_code == 429 and "network" in second.json()["detail"]
+
+
+def test_network_cap_without_a_key_counts_in_memory(tmp_path):
+    with make_client(tmp_path, research_network_daily_limit=1,
+                     visitor_key="", client_ip_header="cf-connecting-ip") as c:
+        first = start_from(c, account(1), "203.0.113.8")
+        deps.research_jobs.wait(first.json()["job_id"], timeout=60)
+        second = start_from(c, account(2), "203.0.113.8")
+    assert first.status_code == 202 and second.status_code == 429
+
+
+def test_networks_are_stored_as_pseudonyms(tmp_path):
+    from sqlalchemy import select
+    from api.store import research_networks
+    with make_client(tmp_path, visitor_key="k",
+                     client_ip_header="cf-connecting-ip") as c:
+        r = start_from(c, account(1), "203.0.113.9")
+        deps.research_jobs.wait(r.json()["job_id"], timeout=60)
+        with deps.runs.engine.connect() as conn:
+            stored = [x[0] for x in conn.execute(select(research_networks.c.network))]
+    assert len(stored) == 1 and "203.0.113" not in stored[0] and len(stored[0]) == 32
+
+
+def test_a_rejected_request_does_not_use_up_the_network(tmp_path):
+    """The account quota refuses first; the network allowance is untouched."""
+    with make_client(tmp_path, research_network_daily_limit=2, research_daily_limit=1,
+                     visitor_key="k", client_ip_header="cf-connecting-ip") as c:
+        a = account(1)
+        r = start_from(c, a, "203.0.113.10")
+        deps.research_jobs.wait(r.json()["job_id"], timeout=60)
+        refused = start_from(c, a, "203.0.113.10")          # account quota spent
+        other = start_from(c, account(2), "203.0.113.10")   # network has room
+    assert refused.status_code == 429 and "Daily research limit" in refused.json()["detail"]
+    assert other.status_code == 202
