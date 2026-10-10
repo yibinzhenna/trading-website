@@ -33,6 +33,10 @@ def _no_daily_cap_unless_asked():
     deps.settings.research_provider = "anthropic"
     deps.settings.research_model = ""
     yield
+    # Restored after the test, not before the next: a later file's
+    # module-scoped client is built before any per-test setup runs, and must
+    # not inherit a test's deliberately broken database.
+    deps.settings.database_url = os.environ["DATABASE_URL"]
 
 
 @pytest.fixture(autouse=True)
