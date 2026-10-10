@@ -101,7 +101,10 @@ pip install -e ".[web]"
 QUANTLAB_DATA_ROOT=tests/fixtures uvicorn api.main:app --reload --workers 1
 ```
 
-Interactive docs at `/docs`.
+Interactive docs at `/docs` when `QUANTLAB_ENABLE_DOCS=1` — off by default,
+because FastAPI's docs pages load unpinned scripts from a CDN onto the site's
+origin, where a signed-in visitor's session lives. The schema itself is
+always at `/openapi.json`.
 
 | Route | Purpose |
 |---|---|
@@ -430,6 +433,8 @@ proxies, or leave both unset to use the socket address.
 | `QUANTLAB_RATE_LIMIT` | `20` | Submissions per client per window |
 | `QUANTLAB_RATE_WINDOW` | `60` | Window, seconds |
 | `QUANTLAB_MAX_INFLIGHT` | `8` | Queued + running jobs, all clients |
+| `QUANTLAB_MAX_BODY_BYTES` | `65536` | Largest request body; larger is refused unread (413) |
+| `QUANTLAB_ENABLE_DOCS` | *(off)* | Serve /docs and /redoc (development only) |
 | `QUANTLAB_CLIENT_IP_HEADER` | *(unset)* | Edge-set client IP header, e.g. `cf-connecting-ip` |
 | `QUANTLAB_TRUST_PROXY_HOPS` | `0` | Trusted appending proxies; 0 uses the socket address |
 | `DATABASE_URL` | `sqlite:///quantlab.db` | Where finished runs are kept; Postgres in production |

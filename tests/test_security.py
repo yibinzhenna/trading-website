@@ -275,3 +275,32 @@ def test_job_ids_are_64_random_bits():
     assert all(len(i) == 16 and int(i, 16) >= 0 for i in ids)
     # A truncated uuid4 always had '4' at position 12.
     assert len({i[12] for i in ids}) > 1
+
+
+# ── API docs pages (patch B) ───────────────────────────────────────────────
+
+def test_docs_pages_are_off_by_default(tmp_path):
+    """They load unpinned CDN scripts onto this origin, outside the CSP."""
+    with make_client(tmp_path) as c:
+        assert c.get("/docs").status_code == 404
+        assert c.get("/redoc").status_code == 404
+        schema = c.get("/openapi.json")
+    assert schema.status_code == 200 and schema.json()["info"]["title"] == "quantlab"
+
+
+def test_no_path_is_exempt_from_the_csp_when_docs_are_off(tmp_path):
+    with make_client(tmp_path) as c:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert "content-security-policy" in c.get(path).headers, path
+
+
+def test_docs_can_be_enabled_for_development():
+    import subprocess
+    import sys
+    code = ("from fastapi.testclient import TestClient; import api.main as m; "
+            "c = TestClient(m.app); print(c.get('/docs').status_code)")
+    import os
+    env = dict(os.environ, QUANTLAB_ENABLE_DOCS="1")
+    out = subprocess.run([sys.executable, "-c", code], env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert out.stdout.strip().endswith("200"), out.stderr[-500:]

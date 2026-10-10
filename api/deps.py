@@ -44,6 +44,11 @@ class Settings:
         # Largest request body accepted, checked before it is read. Every
         # real request is under 1 KB; an unbounded one could exhaust memory.
         self.max_body_bytes = int(os.getenv("QUANTLAB_MAX_BODY_BYTES", 64 * 1024))
+        # FastAPI's interactive docs (/docs, /redoc) load unpinned scripts
+        # from a CDN onto this origin, where the session token lives. Off
+        # unless asked for; meant for local development.
+        self.enable_docs = os.getenv("QUANTLAB_ENABLE_DOCS", "").lower() in (
+            "1", "true", "yes")
         # Where finished runs are kept. SQLite for development; set a
         # Postgres URL in production. Hosts with an ephemeral disk lose a
         # SQLite file on every restart, which is the problem this solves.

@@ -62,6 +62,12 @@ app = FastAPI(
     title="quantlab",
     version=__version__,
     summary="Strategy backtesting with overfit detection",
+    # Off by default. FastAPI's docs pages load swagger-ui@5 and redoc@2 —
+    # major version only, no integrity hash — from a CDN onto this origin,
+    # outside the CSP. A bad release of either could read a signed-in
+    # visitor's session. /openapi.json, which loads nothing, stays.
+    docs_url="/docs" if deps.settings.enable_docs else None,
+    redoc_url="/redoc" if deps.settings.enable_docs else None,
 )
 
 if deps.settings.cors_origins:
@@ -103,9 +109,10 @@ def _csp():
 async def security_headers(request, call_next):
     response = await call_next(request)
     h = response.headers
-    # FastAPI's interactive docs run an inline script and need their own
-    # policy; they render only the schema this app generates.
-    if not request.url.path.startswith(("/docs", "/redoc")):
+    # The interactive docs, when enabled for development, run an inline
+    # script and need their own policy. Disabled, nothing is exempt.
+    if not (deps.settings.enable_docs
+            and request.url.path.startswith(("/docs", "/redoc"))):
         h.setdefault("Content-Security-Policy", _csp())
     h.setdefault("X-Content-Type-Options", "nosniff")
     h.setdefault("X-Frame-Options", "DENY")
