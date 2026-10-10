@@ -1,0 +1,55 @@
+# Disposable / throwaway email domains, refused for AI research.
+# One domain per line; subdomains of a listed domain are refused too.
+# Hand-picked seed list of well-known providers. It can be replaced with a
+# maintained list (one domain per line, same format) without code changes.
+10minutemail.com
+10minutemail.net
+1secmail.com
+1secmail.net
+1secmail.org
+20minutemail.com
+burnermail.io
+discard.email
+dispostable.com
+dropmail.me
+emailfake.com
+emailondeck.com
+fakeinbox.com
+generator.email
+getnada.com
+grr.la
+guerrillamail.biz
+guerrillamail.com
+guerrillamail.de
+guerrillamail.net
+guerrillamail.org
+guerrillamailblock.com
+harakirimail.com
+inboxkitten.com
+jetable.org
+maildrop.cc
+mailcatch.com
+mailinator.com
+mailnesia.com
+mailpoof.com
+mailsac.com
+mintemail.com
+moakt.com
+mohmal.com
+mytemp.email
+pokemail.net
+sharklasers.com
+spam4.me
+spamgourmet.com
+temp-mail.io
+temp-mail.org
+tempail.com
+tempinbox.com
+tempmailo.com
+tempr.email
+throwawaymail.com
+trashmail.com
+trashmail.de
+yopmail.com
+yopmail.fr
+yopmail.net

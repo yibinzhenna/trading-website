@@ -12,10 +12,14 @@ same server secret as visitor addresses, domain-separated so an identity
 pseudonym can never equal a visitor one.
 """
 
+import functools
 import hashlib
 import hmac
+from pathlib import Path
 
 from api import deps
+
+_BLOCKLIST = Path(__file__).with_name("disposable_domains.txt")
 
 # Providers where dots in the local part are ignored for delivery.
 _DOTS_IGNORED = {"gmail.com": "gmail.com", "googlemail.com": "gmail.com"}
@@ -34,6 +38,27 @@ def canonical_email(email):
         local = local.replace(".", "")
         domain = _DOTS_IGNORED[domain]
     return f"{local}@{domain}"
+
+
+@functools.lru_cache(maxsize=1)
+def _disposable_domains():
+    try:
+        lines = _BLOCKLIST.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return frozenset()
+    return frozenset(line.strip().lower() for line in lines
+                     if line.strip() and not line.lstrip().startswith("#"))
+
+
+def is_disposable(email):
+    """Whether the email's domain, or any parent of it, is a known throwaway
+    provider: `x@mailinator.com` and `x@eu.mailinator.com` both are."""
+    domain = (email or "").strip().lower().rpartition("@")[2].rstrip(".")
+    if not domain:
+        return False
+    blocked = _disposable_domains()
+    parts = domain.split(".")
+    return any(".".join(parts[i:]) in blocked for i in range(len(parts) - 1))
 
 
 def identity_key(user):

@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api import deps, schemas
-from api.identity import identity_key
+from api.identity import identity_key, is_disposable
 from api.limits import BodySizeLimit
 from api.store import StoreUnavailable
 from api.auth import User, optional_user, require_user
@@ -466,6 +466,11 @@ def start_research(req: schemas.ResearchRequest,
                    user: User = Depends(require_user)):
     """Start an AI research session on a symbol. Poll GET /research/{id}."""
     _require_research()
+    # Throwaway inboxes make fresh accounts free, and with them fresh quota.
+    if is_disposable(user.email):
+        raise HTTPException(
+            403, "AI research isn't available for disposable email "
+                 "addresses. Sign up with a permanent address to use it.")
     s = deps.settings
     max_trials = min(req.trials, s.research_max_trials)
 

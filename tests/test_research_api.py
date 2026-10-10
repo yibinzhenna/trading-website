@@ -277,3 +277,35 @@ def test_emails_are_not_stored(tmp_path):
             stored = [r[0] for r in conn.execute(select(research_identities.c.identity))]
     assert len(stored) == 1 and "@" not in stored[0] and "private" not in stored[0]
     assert len(stored[0]) == 32
+
+
+# ── Throwaway inboxes (layer 2) ────────────────────────────────────────────
+
+from api.identity import is_disposable  # noqa: E402
+
+
+@pytest.mark.parametrize("email,blocked", [
+    ("x@mailinator.com", True), ("X@MAILINATOR.COM", True),
+    ("x@eu.mailinator.com", True), ("x@yopmail.fr", True),
+    ("x@gmail.com", False), ("x@notmailinator.com", False),
+    ("x@mailinator.com.example.org", False), ("", False), ("no-at-sign", False),
+])
+def test_disposable_domains(email, blocked):
+    assert is_disposable(email) is blocked
+
+
+def test_disposable_inbox_cannot_start_research(tmp_path):
+    client = FakeClient(list(SCRIPT))
+    with make_client(tmp_path, client=client) as c:
+        r = start(c, bearer(token("burner", email="burner@guerrillamail.com")))
+        quota_used = deps.runs.research_usage(
+            __import__("datetime").datetime(2000, 1, 1,
+                                            tzinfo=__import__("datetime").timezone.utc))
+    assert r.status_code == 403 and "disposable" in r.json()["detail"]
+    assert client.requests == [] and quota_used == 0
+
+
+def test_blocklist_ships_with_the_app():
+    """A missing file would quietly disable the check (it fails open)."""
+    from api.identity import _BLOCKLIST, _disposable_domains
+    assert _BLOCKLIST.is_file() and len(_disposable_domains()) >= 40
