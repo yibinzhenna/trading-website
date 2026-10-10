@@ -345,10 +345,15 @@ function renderResearch(s) {
 
   const [from, to] = st.holdout_window || [];
   $("r-window").textContent = from ? `— ${from} to ${to}, never seen by the model` : "";
-  $("r-badge").textContent = f.passed ? "PASS" : "FAIL";
-  $("r-badge").className = `badge ${f.passed ? "pass" : "fail"}`;
+  // Sessions saved before the three-way verdict only have `passed`.
+  const verdict = f.verdict || (f.passed ? "pass" : "fail");
+  $("r-badge").textContent = verdict.toUpperCase();
+  $("r-badge").className = `badge ${verdict}`;
   $("r-final-sub").textContent =
-    `Trial ${f.trial}, ${f.kind.replace(/_/g, " ")} (${params(f.params)}), on unseen data.`;
+    `Trial ${f.trial}, ${f.kind.replace(/_/g, " ")} (${params(f.params)}), on unseen data.` +
+    (verdict === "inconclusive"
+      ? ` It cleared every performance gate but made too few trades (${f.trades}) to rule out luck.`
+      : "");
   $("r-stats").innerHTML = [
     ["Return", pct(f.total_return_pct)], ["Buy & hold", pct(f.benchmark_return_pct)],
     ["Excess", pct(f.excess_return_pct)], ["Sharpe", fmt(f.sharpe)],

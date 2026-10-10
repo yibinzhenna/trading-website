@@ -128,6 +128,9 @@ button:disabled { opacity: 0.45; cursor: progress; }
 }
 .badge.pass { color: var(--pass); background: var(--pass-bg); }
 .badge.fail { color: var(--fail); background: var(--fail-bg); }
+/* Not enough evidence either way: neither pass nor fail colours. */
+.badge.inconclusive { color: var(--text-secondary); background: var(--surface-2);
+                      border: 1px solid var(--border-strong); }
 .verdict .sub { color: var(--text-secondary); font-size: 0.88rem; }
 .verdict .share { margin-left: auto; }
 

@@ -279,10 +279,29 @@ def buy_and_hold(bars, cash=1000.0):
 
 
 def evaluate(bars, signal_fn, cash=1000.0, cost_model=None,
-             interval="day", benchmark_bars=None, confidence=0.95):
-    """Full metric set for one strategy over one window."""
+             interval="day", benchmark_bars=None, confidence=0.95, start=0):
+    """Full metric set for one strategy over one window.
+
+    `start` measures only `bars[start:]`, with the bars before it used as
+    history. Without it a later window starts cold: a 30-bar moving average
+    sees nothing for its first 30 bars, so a short window loses much of its
+    length before the strategy can act. The strategy still cannot trade
+    before the window — its first possible fill is at `bars[start]`'s open —
+    and signals only ever read bars up to the current one.
+    """
+    measured = len(bars) - start
+    if start > 0:
+        inner = signal_fn
+
+        def signal_fn(i, b, in_position):
+            return inner(i, b, in_position) if i >= start - 1 else None
+
     equity, trades, rets = run(bars, signal_fn, cash, cost_model, interval,
                                with_returns=True)
+    if start > 0:
+        # From the close before the window, when the account is still cash.
+        equity = equity[start - 1:]
+        bars = bars[start - 1:]
     bench = buy_and_hold(benchmark_bars or bars, cash)
 
     total = ((equity[-1] - cash) / cash * 100.0) if cash else 0.0
@@ -298,7 +317,7 @@ def evaluate(bars, signal_fn, cash=1000.0, cost_model=None,
         "max_drawdown_pct": max_drawdown(equity),
         "benchmark_max_drawdown_pct": max_drawdown(bench),
         "final_equity": equity[-1],
-        "bars": len(bars),
+        "bars": measured,
         "equity": equity,
     }
     res.update(trade_stats(trades))

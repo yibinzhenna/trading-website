@@ -228,3 +228,44 @@ def test_sensitivity_sweeps_every_value():
         bars, lambda v: (lambda i, b, p: "BUY" if i == v else None),
         [5, 10, 15])
     assert [r["param"] for r in rows] == [5, 10, 15]
+
+
+# ── Warm-started windows ───────────────────────────────────────────────────
+
+def test_window_cannot_trade_before_its_start():
+    """An always-BUY signal must first fill at the window's first open."""
+    bars = ramp(40)
+    res = engine.evaluate(bars, lambda i, b, p: "BUY", cash=1000.0, start=20)
+    # Bought at bars[20] open (=120), marked to bars[-1] close (=139).
+    assert res["final_equity"] == pytest.approx(1000.0 * 139 / 120)
+    assert res["bars"] == 20
+
+
+def test_window_is_warm_started():
+    """A rule needing 10 bars of history acts on the window's first bar when
+    history is available, and sits out 10 bars when it is not."""
+    def needs_history(i, b, p):
+        return "BUY" if i >= 9 else None
+    bars = ramp(40)
+    warm = engine.evaluate(bars, needs_history, start=20)
+    cold = engine.evaluate(bars[20:], needs_history)
+    assert warm["final_equity"] > cold["final_equity"]
+
+
+def test_window_signals_never_read_past_the_current_bar():
+    seen = []
+
+    def spy(i, b, p):
+        seen.append((i, len(b)))
+        return None
+    engine.evaluate(ramp(30), spy, start=10)
+    # Called only from the bar before the window; bars[:i+1] is the contract.
+    assert min(i for i, _ in seen) == 9
+
+
+def test_start_zero_is_unchanged():
+    bars = ramp(30)
+    sig = lambda i, b, p: "BUY" if i == 3 else ("SELL" if i == 20 else None)
+    a = engine.evaluate(bars, sig)
+    b = engine.evaluate(bars, sig, start=0)
+    assert a["final_equity"] == b["final_equity"] and a["bars"] == b["bars"]

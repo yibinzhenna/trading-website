@@ -271,3 +271,46 @@ def test_scrub_metrics(text, gone):
 def test_scrub_keeps_parameters_and_trial_numbers():
     text = "Trial 3 used fast 12 and slow 40; lookback 20 was steadier."
     assert scrub_metrics(text) == text
+
+
+# ── Holdout verdict ────────────────────────────────────────────────────────
+
+from quantlab.research import holdout_verdict  # noqa: E402
+
+
+def gates(**failed):
+    names = ["Sharpe >= 1.00", "Max drawdown <= 30%", "Profit factor >= 1.00",
+             "Trades >= 3", "Edge significant at 95%", "Beats benchmark after costs"]
+    return [(n, n.split()[0] not in failed, "") for n in names]
+
+
+def test_verdict_pass():
+    assert holdout_verdict(True, gates()) == "pass"
+
+
+def test_too_few_trades_alone_is_inconclusive_not_fail():
+    assert holdout_verdict(False, gates(Trades=1)) == "inconclusive"
+    assert holdout_verdict(False, gates(Trades=1, Edge=1)) == "inconclusive"
+
+
+def test_any_performance_failure_is_a_fail():
+    assert holdout_verdict(False, gates(Sharpe=1)) == "fail"
+    assert holdout_verdict(False, gates(Trades=1, Beats=1)) == "fail"
+
+
+def test_verdict_reads_api_shaped_checks_too():
+    checks = [{"name": n, "passed": ok, "detail": d} for n, ok, d in gates(Edge=1)]
+    assert holdout_verdict(False, checks) == "inconclusive"
+
+
+def test_planted_edge_can_now_pass_research():
+    """Issue #2: on 500 bars the holdout made ~1 trade and nothing could
+    pass. A trend pick on the 15-year series passes the one-shot test."""
+    client, out = research([TREND, call("finish", pick=1, notes="trend")])
+    f = out["final"]
+    assert f["verdict"] == "pass" and f["passed"] and f["trades"] >= 5
+
+
+def test_wrong_pick_still_fails_research():
+    client, out = research([REVERT, call("finish", pick=1, notes="dip buying")])
+    assert out["final"]["verdict"] == "fail"

@@ -327,7 +327,7 @@ def run_research(client, bars, symbol, goal="", *, model=DEFAULT_MODEL,
         return state
 
     chosen = next(t for t in state["trials"] if t["n"] == pick)
-    state["final"] = _holdout(chosen, holdout, cash, cost_model, criteria,
+    state["final"] = _holdout(chosen, bars, cut, cash, cost_model, criteria,
                               len(state["trials"]))
     progress()
     return state
@@ -386,15 +386,44 @@ def _run_trial(n, raw, bars, cash, cost_model, criteria, seen):
     return trial
 
 
-def _holdout(trial, holdout, cash, cost_model, criteria, n_trials):
-    """The one-shot test on bars the model never saw."""
+# Gates that measure how much evidence there is rather than how good it is.
+_SAMPLE_GATES = ("Trades", "Edge significant")
+
+
+def holdout_verdict(passed, checks):
+    """"pass", "fail", or "inconclusive".
+
+    Inconclusive: every performance gate passed, and only the sample-size
+    gates failed. "Not enough trades to tell" is a different finding from
+    "evidence against", and a short holdout produces it often; reporting it
+    as FAIL would misstate what the test found. It is never a pass.
+    """
+    if passed:
+        return "pass"
+    failed = [c[0] if isinstance(c, tuple) else c["name"]
+              for c in checks
+              if not (c[1] if isinstance(c, tuple) else c["passed"])]
+    if failed and all(name.startswith(_SAMPLE_GATES) for name in failed):
+        return "inconclusive"
+    return "fail"
+
+
+def _holdout(trial, bars, cut, cash, cost_model, criteria, n_trials):
+    """The one-shot test on bars the model never saw.
+
+    Warm-started: indicators read the research window as history, so the
+    strategy can act from the holdout's first bar instead of spending its
+    lookback sitting idle. It cannot trade before the holdout, and nothing
+    from the holdout reaches a decision made before it.
+    """
     signal = compile_strategy(StrategySpec(kind=trial["kind"],
                                            params=trial["params"]))
-    res = engine.evaluate(holdout, signal, cash, cost_model)
+    res = engine.evaluate(bars, signal, cash, cost_model, start=cut)
     passed, checks = engine.grade(res, criteria)
     return {
         "trial": trial["n"], "kind": trial["kind"], "params": trial["params"],
         "passed": passed,
+        "verdict": holdout_verdict(passed, checks),
         "checks": [{"name": n, "passed": ok, "detail": d}
                    for n, ok, d in checks],
         "total_return_pct": _r(res["total_return_pct"]),

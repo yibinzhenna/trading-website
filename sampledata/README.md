@@ -10,7 +10,7 @@ against them beyond what each one was built to show.
 
 | Symbol | Built as | What a correct engine should do |
 |---|---|---|
-| `DEMO-REGIME` | Alternating ~90-day up and down trends | **Trend strategies pass, mean reversion fails** |
+| `DEMO-REGIME` | Alternating ~90-day up and down trends, 15 years | **Trend strategies pass, mean reversion fails** |
 | `DEMO-TREND` | Random walk, upward drift | Everything fails |
 | `DEMO-CHOP` | Random walk, no drift | Everything fails |
 | `DEMO-BEAR` | Random walk, downward drift | Everything fails |
@@ -36,3 +36,16 @@ drift, volatility) were chosen after trying several and keeping one where the
 edge was clear. That is planting a known answer, like a unit test fixture.
 What was not done is tuning the *strategy* parameters to the data — that is
 the line between a fixture and a curve fit.
+
+## Why DEMO-REGIME is 15 years long
+
+AI research holds back the last 30% of a series as a holdout and judges the
+model's pick there once. With ~90-day regimes a trend strategy trades about
+once per cycle, so a short holdout cannot hold enough trades for the
+significance gate: at 500 bars every pick made about one trade and nothing
+could ever pass. The length was chosen after testing — 750, 1,000 and 1,260
+bars all fell short, 2,520 left momentum just below the bar, and 3,780 (15
+years) is the shortest tried at which the four trend strategies pass the
+holdout and mean reversion fails it. As above, only the series was sized;
+no strategy parameter was tuned. `scripts/make_sampledata.py` regenerates it
+exactly, and a test checks the committed file against it.
